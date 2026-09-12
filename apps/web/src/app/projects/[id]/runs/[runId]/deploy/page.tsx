@@ -7,13 +7,16 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
+import { Pagination } from "@/components/pagination";
 import { api } from "@/lib/api";
+import { DEFAULT_PAGE_SIZE, pageCount, paginate } from "@/lib/pagination";
 
 export default function DeployPage() {
   const params = useParams<{ id: string; runId: string }>();
   const [deploy, setDeploy] = useState<DeployRunDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [page, setPage] = useState(1);
 
   const load = useCallback(async () => {
     const data = await api.getRunDeploy(params.id, params.runId);
@@ -124,7 +127,7 @@ export default function DeployPage() {
                 </tr>
               </thead>
               <tbody>
-                {deploy.objects.map((object) => (
+                {paginate(deploy.objects, page, DEFAULT_PAGE_SIZE).map((object) => (
                   <tr key={object.id} className="border-b border-border last:border-0">
                     <td className="px-4 py-3">
                       {object.owner}.{object.name}
@@ -145,6 +148,17 @@ export default function DeployPage() {
                 ))}
               </tbody>
             </table>
+            {deploy.objects.length > DEFAULT_PAGE_SIZE ? (
+              <div className="border-t border-border px-4 py-3">
+                <Pagination
+                  page={Math.min(page, pageCount(deploy.objects.length, DEFAULT_PAGE_SIZE))}
+                  pageSize={DEFAULT_PAGE_SIZE}
+                  total={deploy.objects.length}
+                  onPageChange={setPage}
+                  label="objects"
+                />
+              </div>
+            ) : null}
           </Card>
         </>
       )}

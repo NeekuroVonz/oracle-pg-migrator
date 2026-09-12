@@ -1,12 +1,17 @@
 "use client";
 
-import type { MigrationRunDto, MigrationStrategy } from "@migrator/shared";
+import {
+  MIGRATION_STRATEGY_LABELS,
+  type MigrationRunDto,
+  type MigrationStrategy,
+} from "@migrator/shared";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
+import { StrategyBadge } from "@/components/strategy-badge";
 import { Select } from "@/components/ui/select";
 import { api } from "@/lib/api";
 
@@ -69,16 +74,20 @@ export default function RunsPage() {
             onChange={(event) => setStrategy(event.target.value as MigrationStrategy)}
             aria-label="Conversion strategy"
           >
-            <option value="FAST">FAST</option>
-            <option value="BALANCED">BALANCED</option>
-            <option value="MAXIMUM_ACCURACY">MAXIMUM_ACCURACY</option>
+            <option value="FAST">{MIGRATION_STRATEGY_LABELS.FAST}</option>
+            <option value="BALANCED">{MIGRATION_STRATEGY_LABELS.BALANCED}</option>
+            <option value="MAXIMUM_ACCURACY">{MIGRATION_STRATEGY_LABELS.MAXIMUM_ACCURACY}</option>
           </Select>
           <Button onClick={() => void start()} disabled={pending || active}>
-            {pending ? "Starting…" : "Start run"}
+            {pending ? "Starting…" : active ? "Run in progress" : "Start run"}
           </Button>
         </div>
       </div>
       {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
+      <p className="mt-4 text-sm text-muted">
+        One conversion at a time per project. Sequential reruns are fine: the latest run owns live
+        object SQL and status. Finished-run reports stay as snapshots.
+      </p>
       <div className="mt-6 space-y-3">
         {runs.length === 0 ? (
           <Card>
@@ -87,11 +96,15 @@ export default function RunsPage() {
             </p>
           </Card>
         ) : (
-          runs.map((run) => (
+          runs.map((run, index) => (
             <Card key={run.id}>
               <div className="flex items-center justify-between gap-3">
                 <CardTitle className="font-mono text-sm">{run.id.slice(0, 8)}</CardTitle>
-                <Badge>{run.status}</Badge>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {index === 0 ? <Badge className="border-accent text-accent">Latest</Badge> : null}
+                  <StrategyBadge strategy={run.strategy} />
+                  <Badge>{run.status}</Badge>
+                </div>
               </div>
               <p className="mt-2 text-sm text-muted">
                 Converted {run.convertedCount} · compiled {run.compiledCount} · failed{" "}

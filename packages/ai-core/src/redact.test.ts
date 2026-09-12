@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { extractJsonObject, normalizeConvertResult } from "./parse-json";
+import { formatAiHttpError } from "./http";
 import { redactSecrets } from "./redact";
 import { createAiRegistry } from "./registry";
 import {
@@ -130,5 +131,17 @@ describe("registry", () => {
     } as MigrationAIProvider;
     const registry = createAiRegistry([convertOnly, fixer]);
     expect(registry.forRole("fix")?.id).toBe("b");
+  });
+});
+
+describe("formatAiHttpError", () => {
+  test("explains a missing chat completions route", () => {
+    const message = formatAiHttpError(
+      404,
+      "https://api.cursor.com/v1/chat/completions",
+      '{"message":"Route POST:/v1/chat/completions not found"}',
+    );
+    expect(message).toContain("AI provider HTTP 404");
+    expect(message).toContain("no OpenAI Chat Completions route");
   });
 });

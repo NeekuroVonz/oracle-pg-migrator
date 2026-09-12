@@ -1,4 +1,8 @@
-import type { AiProviderKind } from "@migrator/shared";
+import {
+  CURSOR_CLOUD_CHAT_UNSUPPORTED,
+  usesCursorAgent,
+  type AiProviderKind,
+} from "@migrator/shared";
 import {
   defaultBaseUrl,
   type FetchLike,
@@ -8,6 +12,7 @@ import {
   unwrapChatText,
 } from "./http";
 import { extractJsonObject, normalizeConvertResult, normalizeVerifyResult } from "./parse-json";
+import { buildAiUserPayload } from "./payload";
 import { loadPrompt, promptVersion } from "./prompts";
 import { redactSecrets } from "./redact";
 import type {
@@ -19,18 +24,12 @@ import type {
   MigrationAIProvider,
 } from "./types";
 
-function userPayload(input: AiConvertInput): string {
-  return redactSecrets(
-    JSON.stringify({
-      objectType: input.objectType,
-      owner: input.owner,
-      name: input.name,
-      oracleSource: input.sourceText,
-      currentSql: input.currentSql ?? null,
-      compileError: input.compileError ?? null,
-      warnings: input.warnings ?? [],
-    }),
-  );
+function assertChatCompletionsSupported(kind: AiProviderKind, baseUrl: string): void {
+  if (usesCursorAgent(kind, baseUrl)) {
+    throw new Error(
+      `${CURSOR_CLOUD_CHAT_UNSUPPORTED} Call createCursorProvider from @migrator/ai-cursor.`,
+    );
+  }
 }
 
 async function completeJson(input: {
@@ -43,6 +42,7 @@ async function completeJson(input: {
   promptKind: AiPromptKind;
   user: string;
 }): Promise<unknown> {
+  assertChatCompletionsSupported(input.kind, input.baseUrl);
   const system = redactSecrets(loadPrompt(input.promptKind));
   const user = redactSecrets(input.user);
   if (input.kind === "anthropic") {
@@ -116,7 +116,7 @@ export function createMigrationAiProvider(
       timeoutMs,
       fetchImpl,
       promptKind: kind,
-      user: userPayload(input),
+      user: buildAiUserPayload(input),
     });
     return normalizeConvertResult(raw, `${kind}-${version}`);
   }
@@ -138,11 +138,12 @@ export function createMigrationAiProvider(
         timeoutMs,
         fetchImpl,
         promptKind: "verifier",
-        user: userPayload(input),
+        user: buildAiUserPayload(input),
       });
       return normalizeVerifyResult(raw, `verifier-${version}`);
     },
     async listModels(): Promise<string[]> {
+      assertChatCompletionsSupported(config.kind, baseUrl);
       if (config.kind === "anthropic") {
         const payload = await getJson({
           url: `${baseUrl}/v1/models`,

@@ -17,6 +17,7 @@ import { createQueue, QUEUE_NAMES } from "@migrator/queue";
 import {
   defaultScopeInput,
   evaluateScopeCatalog,
+  isDeterministicSchemaType,
   isPhase4ObjectType,
   MAPPING_RULES_VERSION,
   type DiscoveredObjectMetadata,
@@ -303,14 +304,14 @@ export async function runConversion(input: {
         failedCount += 1;
         status = "FAILED";
       } else if (
-        result.status === "REVIEW_REQUIRED" ||
-        recon?.reconcileAction === "REVIEW_REQUIRED" ||
         recon?.targetState === "TARGET_DRIFTED" ||
-        recon?.targetState === "TARGET_CONFLICT"
+        recon?.targetState === "TARGET_CONFLICT" ||
+        (!isDeterministicSchemaType(object.objectType) &&
+          (result.status === "REVIEW_REQUIRED" || recon?.reconcileAction === "REVIEW_REQUIRED"))
       ) {
         reviewRequiredCount += 1;
         status = "REVIEW_REQUIRED";
-      } else if (dagNode?.inCycle) {
+      } else if (dagNode?.inCycle && !isDeterministicSchemaType(object.objectType)) {
         convertedCount += 1;
         reviewRequiredCount += 1;
         status = "REVIEW_REQUIRED";

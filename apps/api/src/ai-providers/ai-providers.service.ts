@@ -1,8 +1,5 @@
-import {
-  createMigrationAiProvider,
-  type MigrationAIProvider,
-  redactErrorMessage,
-} from "@migrator/ai-core";
+import { type MigrationAIProvider, redactErrorMessage } from "@migrator/ai-core";
+import { createRuntimeAiProvider } from "@migrator/ai-cursor";
 import type { AppEnv, SecretCipher } from "@migrator/config";
 import { AiProvidersRepository, AuditRepository, toAiProviderDto } from "@migrator/db";
 import type {
@@ -134,7 +131,7 @@ export class AiProvidersService {
     row: Awaited<ReturnType<AiProvidersRepository["getByIdOrThrow"]>>,
     apiKey: string,
   ): MigrationAIProvider {
-    return createMigrationAiProvider({
+    return createRuntimeAiProvider({
       id: row.id,
       kind: row.kind,
       name: row.name,

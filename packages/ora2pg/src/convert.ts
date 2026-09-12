@@ -3,6 +3,7 @@ import {
   type ConverterType,
   type DiscoveredColumn,
   HIGH_RISK_MARKERS,
+  isDeterministicSchemaType,
   isPhase4ObjectType,
   MAPPING_RULES_VERSION,
   type OracleObjectType,
@@ -243,13 +244,14 @@ function rewriteGlobalTemporaryTable(
 
 function finish(
   result: Omit<ConversionResult, "mappingRulesVersion" | "converterType">,
+  objectType: OracleObjectType,
 ): ConversionResult {
   const riskFlags = [...new Set(result.riskFlags)];
   const riskLevel = result.riskLevel === "LOW" ? riskLevelFor(riskFlags) : result.riskLevel;
   const status: ConversionAttemptStatus =
     result.status === "FAILED"
       ? "FAILED"
-      : riskLevel === "HIGH" || riskFlags.length > 0
+      : !isDeterministicSchemaType(objectType) && (riskLevel === "HIGH" || riskFlags.length > 0)
         ? "REVIEW_REQUIRED"
         : result.status;
   return {
@@ -284,7 +286,7 @@ function convertSequence(source: string, owner: string, name: string): Conversio
     targetSchema: names.schema,
     targetName: names.ident,
     errorMessage: null,
-  });
+  }, "SEQUENCE");
 }
 
 function convertIndex(source: string, owner: string, name: string): ConversionResult {
@@ -309,7 +311,7 @@ function convertIndex(source: string, owner: string, name: string): ConversionRe
     targetSchema: names.schema,
     targetName: names.ident,
     errorMessage: null,
-  });
+  }, "INDEX");
 }
 
 function convertTableOrConstraint(
@@ -317,6 +319,7 @@ function convertTableOrConstraint(
   owner: string,
   name: string,
   columns: DiscoveredColumn[] = [],
+  objectType: "TABLE" | "CONSTRAINT" = "TABLE",
 ): ConversionResult {
   const names = qualifiedName(owner, name);
   const riskFlags = detectRiskFlags(source);
@@ -352,7 +355,7 @@ function convertTableOrConstraint(
     targetSchema: names.schema,
     targetName: names.ident,
     errorMessage: null,
-  });
+  }, objectType);
 }
 
 function convertView(source: string, owner: string, name: string): ConversionResult {
@@ -385,7 +388,7 @@ function convertView(source: string, owner: string, name: string): ConversionRes
     targetSchema: names.schema,
     targetName: names.ident,
     errorMessage: null,
-  });
+  }, "VIEW");
 }
 
 export function convertOracleDdl(input: {
@@ -406,7 +409,7 @@ export function convertOracleDdl(input: {
       targetSchema: names.schema,
       targetName: names.ident,
       errorMessage: `${input.objectType} is not converted in the deterministic Phase 4/5 engine`,
-    });
+    }, input.objectType);
   }
   if (!input.sourceText || input.sourceText.trim().length === 0) {
     return finish({
@@ -418,7 +421,7 @@ export function convertOracleDdl(input: {
       targetSchema: names.schema,
       targetName: names.ident,
       errorMessage: "No extracted Oracle DDL to convert",
-    });
+    }, input.objectType);
   }
   try {
     switch (input.objectType) {
@@ -435,6 +438,7 @@ export function convertOracleDdl(input: {
           input.owner,
           input.name,
           input.columns ?? [],
+          input.objectType,
         );
     }
   } catch (error) {
@@ -447,6 +451,6 @@ export function convertOracleDdl(input: {
       targetSchema: names.schema,
       targetName: names.ident,
       errorMessage: error instanceof Error ? error.message : "Conversion failed",
-    });
+    }, input.objectType);
   }
 }

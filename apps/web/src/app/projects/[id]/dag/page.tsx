@@ -1,6 +1,10 @@
 "use client";
 
-import type { MigrationStrategy, ObjectDagDto } from "@migrator/shared";
+import {
+  MIGRATION_STRATEGY_LABELS,
+  type MigrationStrategy,
+  type ObjectDagDto,
+} from "@migrator/shared";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -44,9 +48,9 @@ export default function ProjectDagPage() {
           onChange={(event) => setStrategy(event.target.value as MigrationStrategy)}
           aria-label="Strategy for deferred types"
         >
-          <option value="FAST">FAST</option>
-          <option value="BALANCED">BALANCED</option>
-          <option value="MAXIMUM_ACCURACY">MAXIMUM_ACCURACY</option>
+          <option value="FAST">{MIGRATION_STRATEGY_LABELS.FAST}</option>
+          <option value="BALANCED">{MIGRATION_STRATEGY_LABELS.BALANCED}</option>
+          <option value="MAXIMUM_ACCURACY">{MIGRATION_STRATEGY_LABELS.MAXIMUM_ACCURACY}</option>
         </Select>
       </div>
       {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}

@@ -2,7 +2,7 @@
 
 Phase 6.
 
-Providers implement `MigrationAIProvider` (`convert`, `fix`, `verify`, `listModels`) and declare capabilities. Migration logic must not import a vendor SDK. HTTP adapters live in `@migrator/ai-core`; `@migrator/ai-openai`, `ai-anthropic`, `ai-gemini`, `ai-cursor`, and `ai-openai-compatible` are thin factories.
+Providers implement `MigrationAIProvider` (`convert`, `fix`, `verify`, `listModels`) and declare capabilities. HTTP adapters live in `@migrator/ai-core`. `@migrator/ai-cursor` uses `@cursor/sdk` `Agent.prompt` (empty sandbox, no tools) unless Base URL is an OpenAI-compatible proxy.
 
 Defaults:
 

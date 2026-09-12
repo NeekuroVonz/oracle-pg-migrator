@@ -1,6 +1,15 @@
 import { type AiProviderKind, defaultAiBaseUrl } from "@migrator/shared";
 import { redactErrorMessage, redactSecrets } from "./redact";
 
+export function formatAiHttpError(status: number, url: string, detail: string): string {
+  const prefix = `AI provider HTTP ${status}: ${detail}`;
+  const path = url.split("?")[0] ?? url;
+  if (status === 404 && /\/chat\/completions\/?$/i.test(path)) {
+    return `${prefix} This host has no OpenAI Chat Completions route. Cursor Cloud API is agents-only; use OpenAI, Anthropic, Gemini, or an OpenAI-compatible server.`;
+  }
+  return prefix;
+}
+
 export type FetchLike = typeof fetch;
 
 export function normalizeBaseUrl(url: string): string {
@@ -34,7 +43,7 @@ export async function postJson(input: {
   });
   if (!response.ok) {
     const detail = await readErrorBody(response);
-    throw new Error(`AI provider HTTP ${response.status}: ${detail}`);
+    throw new Error(formatAiHttpError(response.status, input.url, detail));
   }
   return (await response.json()) as unknown;
 }

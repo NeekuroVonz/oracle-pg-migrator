@@ -1,8 +1,8 @@
 import {
   createAiRegistry,
-  createMigrationAiProvider,
   type MigrationAIProvider,
 } from "@migrator/ai-core";
+import { createRuntimeAiProvider } from "@migrator/ai-cursor";
 import type { AppEnv, SecretCipher } from "@migrator/config";
 import type { AiProvidersRepository } from "@migrator/db";
 
@@ -20,7 +20,7 @@ export async function loadAiRuntime(input: {
 }): Promise<AiRuntime> {
   const rows = await input.providers.listEnabled();
   const instances: MigrationAIProvider[] = rows.map((row) =>
-    createMigrationAiProvider({
+    createRuntimeAiProvider({
       id: row.id,
       kind: row.kind,
       name: row.name,
@@ -37,7 +37,7 @@ export async function loadAiRuntime(input: {
   );
   if (instances.length === 0 && input.env.AI_OPENAI_API_KEY) {
     instances.push(
-      createMigrationAiProvider({
+      createRuntimeAiProvider({
         id: "env-openai",
         kind: "openai",
         name: "OpenAI (env)",

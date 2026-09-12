@@ -7,13 +7,16 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
+import { Pagination } from "@/components/pagination";
 import { api } from "@/lib/api";
+import { DEFAULT_PAGE_SIZE, pageCount, paginate } from "@/lib/pagination";
 
 export default function DataCopyPage() {
   const params = useParams<{ id: string; runId: string }>();
   const [copy, setCopy] = useState<DataCopyRunDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [page, setPage] = useState(1);
 
   const load = useCallback(async () => {
     const data = await api.getRunDataCopy(params.id, params.runId);
@@ -119,7 +122,7 @@ export default function DataCopyPage() {
                 </tr>
               </thead>
               <tbody>
-                {copy.tables.map((table) => (
+                {paginate(copy.tables, page, DEFAULT_PAGE_SIZE).map((table) => (
                   <tr key={table.id} className="border-b border-border last:border-0">
                     <td className="px-4 py-3">
                       {table.owner}.{table.name}
@@ -143,6 +146,17 @@ export default function DataCopyPage() {
                 ))}
               </tbody>
             </table>
+            {copy.tables.length > DEFAULT_PAGE_SIZE ? (
+              <div className="border-t border-border px-4 py-3">
+                <Pagination
+                  page={Math.min(page, pageCount(copy.tables.length, DEFAULT_PAGE_SIZE))}
+                  pageSize={DEFAULT_PAGE_SIZE}
+                  total={copy.tables.length}
+                  onPageChange={setPage}
+                  label="tables"
+                />
+              </div>
+            ) : null}
           </Card>
         </>
       )}

@@ -7,7 +7,10 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
+import { Pagination } from "@/components/pagination";
+import { StrategyBadge } from "@/components/strategy-badge";
 import { api } from "@/lib/api";
+import { DEFAULT_PAGE_SIZE, pageCount, paginate } from "@/lib/pagination";
 
 const DIMENSIONS: Array<{
   key:
@@ -59,6 +62,7 @@ export default function ReportPage() {
   const [report, setReport] = useState<MigrationReportDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sqlPending, setSqlPending] = useState(false);
+  const [blockerPage, setBlockerPage] = useState(1);
 
   const load = useCallback(async () => {
     const data = await api.getRunReport(params.id, params.runId);
@@ -116,6 +120,9 @@ export default function ReportPage() {
 
   const objectHref = (objectId: string) =>
     `/projects/${params.id}/runs/${params.runId}/objects/${objectId}`;
+  const blockerPages = pageCount(report.blocking.length, DEFAULT_PAGE_SIZE);
+  const currentBlockerPage = Math.min(blockerPage, blockerPages);
+  const blockerRows = paginate(report.blocking, currentBlockerPage, DEFAULT_PAGE_SIZE);
 
   return (
     <div className="mx-auto max-w-6xl px-8 py-8">
@@ -140,12 +147,12 @@ export default function ReportPage() {
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-semibold">Migration report</h1>
+        <StrategyBadge strategy={report.strategy} />
         <Badge className={gateClass(report.gateStatus)}>{report.gateStatus}</Badge>
       </div>
       <p className="mt-2 text-sm text-muted">
         Weighted readiness {report.readiness.overallPercent}% · {report.validatedCount}/
-        {report.inScopeCount} in-scope validated · {report.blockingCount} blockers · strategy{" "}
-        {report.strategy}
+        {report.inScopeCount} in-scope validated · {report.blockingCount} blockers
       </p>
       <p className="mt-1 text-sm text-muted">
         Compile success is not VALIDATED and is not READY_FOR_DEPLOYMENT. Data is row-count match
@@ -237,32 +244,43 @@ export default function ReportPage() {
         {report.blocking.length === 0 ? (
           <p className="mt-2 text-sm text-muted">No blocking objects.</p>
         ) : (
-          <table className="mt-3 w-full text-left text-sm">
-            <thead className="text-muted">
-              <tr>
-                <th className="py-1 font-medium">Object</th>
-                <th className="py-1 font-medium">Type</th>
-                <th className="py-1 font-medium">Status</th>
-                <th className="py-1 font-medium">Detail</th>
-              </tr>
-            </thead>
-            <tbody>
-              {report.blocking.map((item) => (
-                <tr key={item.id} className="border-t border-border">
-                  <td className="py-2">
-                    <Link className="hover:underline" href={objectHref(item.id)}>
-                      {item.owner}.{item.name}
-                    </Link>
-                  </td>
-                  <td className="py-2 text-muted">{item.objectType}</td>
-                  <td className="py-2">
-                    <Badge>{item.status}</Badge>
-                  </td>
-                  <td className="py-2 text-muted">{item.detail}</td>
+          <>
+            <table className="mt-3 w-full text-left text-sm">
+              <thead className="text-muted">
+                <tr>
+                  <th className="py-1 font-medium">Object</th>
+                  <th className="py-1 font-medium">Type</th>
+                  <th className="py-1 font-medium">Status</th>
+                  <th className="py-1 font-medium">Detail</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {blockerRows.map((item) => (
+                  <tr key={item.id} className="border-t border-border">
+                    <td className="py-2">
+                      <Link className="hover:underline" href={objectHref(item.id)}>
+                        {item.owner}.{item.name}
+                      </Link>
+                    </td>
+                    <td className="py-2 text-muted">{item.objectType}</td>
+                    <td className="py-2">
+                      <Badge>{item.status}</Badge>
+                    </td>
+                    <td className="py-2 text-muted">{item.detail}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="mt-3">
+              <Pagination
+                page={currentBlockerPage}
+                pageSize={DEFAULT_PAGE_SIZE}
+                total={report.blocking.length}
+                onPageChange={setBlockerPage}
+                label="blockers"
+              />
+            </div>
+          </>
         )}
       </Card>
 

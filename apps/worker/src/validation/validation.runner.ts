@@ -21,11 +21,12 @@ import { buildObjectDag, orderByDag } from "@migrator/dependency-graph";
 import { createValidatorPool, type ValidatorPool } from "@migrator/docker-manager";
 import { inspectTargetObject, reconcileObject, sandboxSqlForAction } from "@migrator/postgres";
 import { createQueue, QUEUE_NAMES } from "@migrator/queue";
-import type {
-  DiscoveredObjectMetadata,
-  MigrationStrategy,
-  ObjectStatus,
-  ReportingJobData,
+import {
+  type DiscoveredObjectMetadata,
+  isDeterministicSchemaType,
+  type MigrationStrategy,
+  type ObjectStatus,
+  type ReportingJobData,
 } from "@migrator/shared";
 import {
   type CompileResult,
@@ -73,6 +74,17 @@ function isFatalAiProviderError(message: string | null | undefined): boolean {
     /AI provider HTTP (401|403|404|429)\b/i.test(message) ||
     /ECONNREFUSED|ENOTFOUND|fetch failed/i.test(message)
   );
+}
+
+function stickyReview(object: {
+  objectType: string;
+  riskLevel: string | null;
+  status: string;
+}): boolean {
+  if (isDeterministicSchemaType(object.objectType)) {
+    return false;
+  }
+  return object.riskLevel === "HIGH" || object.status === "REVIEW_REQUIRED";
 }
 
 async function persistCompile(input: {
@@ -436,16 +448,16 @@ export async function runValidation(input: {
           const status = compiled.ok
             ? objectStatusAfterCompile({
                 compilePassed: true,
-                highRisk: object.riskLevel === "HIGH",
-                reviewRequired: object.status === "REVIEW_REQUIRED",
+                highRisk: !isDeterministicSchemaType(object.objectType) && object.riskLevel === "HIGH",
+                reviewRequired: stickyReview(object),
               })
             : recon.reconcileAction === "UPDATE_REQUIRED" ||
                 recon.reconcileAction === "REPLACE_REQUIRED"
               ? "REVIEW_REQUIRED"
               : objectStatusAfterCompile({
                   compilePassed: false,
-                  highRisk: object.riskLevel === "HIGH",
-                  reviewRequired: object.status === "REVIEW_REQUIRED",
+                  highRisk: !isDeterministicSchemaType(object.objectType) && object.riskLevel === "HIGH",
+                  reviewRequired: stickyReview(object),
                 });
           await persistCompile({
             runId: input.runId,
@@ -591,7 +603,7 @@ export async function runValidation(input: {
       }
 
       for (const object of compilable.filter((row) => row.compileStatus === "PASSED")) {
-        const reviewRequired = object.riskLevel === "HIGH" || object.status === "REVIEW_REQUIRED";
+        const reviewRequired = stickyReview(object);
         await input.objects.updateConversion(object.id, { status: "TESTING" });
         const metadata = (object.metadata ?? {}) as DiscoveredObjectMetadata;
         const tests = await runStructuralTests(client, {
@@ -611,7 +623,7 @@ export async function runValidation(input: {
         const status = objectStatusAfterTests({
           compilePassed: true,
           testsPassed,
-          highRisk: object.riskLevel === "HIGH",
+          highRisk: !isDeterministicSchemaType(object.objectType) && object.riskLevel === "HIGH",
           reviewRequired,
         });
         await persistTest({

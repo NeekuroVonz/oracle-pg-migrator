@@ -23,6 +23,12 @@ export type ObjectStatus = (typeof OBJECT_STATUSES)[number];
 export const MIGRATION_STRATEGIES = ["FAST", "BALANCED", "MAXIMUM_ACCURACY"] as const;
 export type MigrationStrategy = (typeof MIGRATION_STRATEGIES)[number];
 
+export const MIGRATION_STRATEGY_LABELS: Record<MigrationStrategy, string> = {
+  FAST: "FAST",
+  BALANCED: "BALANCED",
+  MAXIMUM_ACCURACY: "MAXIMUM ACCURACY",
+};
+
 export const CONNECTION_ROLES = ["SOURCE", "TARGET"] as const;
 export type ConnectionRole = (typeof CONNECTION_ROLES)[number];
 
@@ -105,6 +111,12 @@ export type Phase4ObjectType = (typeof PHASE_4_OBJECT_TYPES)[number];
 
 export function isPhase4ObjectType(type: OracleObjectType): type is Phase4ObjectType {
   return (PHASE_4_OBJECT_TYPES as readonly string[]).includes(type);
+}
+
+export const DETERMINISTIC_SCHEMA_TYPES = ["TABLE", "SEQUENCE", "CONSTRAINT", "INDEX"] as const;
+
+export function isDeterministicSchemaType(type: string): boolean {
+  return (DETERMINISTIC_SCHEMA_TYPES as readonly string[]).includes(type.toUpperCase());
 }
 
 export const MIGRATION_RUN_STATUSES = ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED"] as const;

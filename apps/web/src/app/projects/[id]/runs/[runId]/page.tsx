@@ -12,8 +12,11 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardTitle } from "@/components/ui/card";
+import { Pagination } from "@/components/pagination";
 import { Select } from "@/components/ui/select";
+import { StrategyBadge } from "@/components/strategy-badge";
 import { api } from "@/lib/api";
+import { DEFAULT_PAGE_SIZE } from "@/lib/pagination";
 
 function targetBadge(state: TargetState | null): string {
   if (state === "TARGET_MATCHED") {
@@ -30,18 +33,19 @@ export default function RunDetailPage() {
   const [detail, setDetail] = useState<ConversionRunDetailDto | null>(null);
   const [status, setStatus] = useState("");
   const [reconcileAction, setReconcileAction] = useState("");
+  const [page, setPage] = useState(1);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const data = await api.getRun(params.id, params.runId, {
       status: status || undefined,
       reconcileAction: reconcileAction || undefined,
-      page: 1,
-      pageSize: 100,
+      page,
+      pageSize: DEFAULT_PAGE_SIZE,
     });
     setDetail(data);
     return data;
-  }, [params.id, params.runId, status, reconcileAction]);
+  }, [params.id, params.runId, status, reconcileAction, page]);
 
   useEffect(() => {
     load().catch((err: unknown) => {
@@ -74,14 +78,15 @@ export default function RunDetailPage() {
           Runs
         </Link>
       </p>
-      <div className="mt-2 flex items-center gap-3">
+      <div className="mt-2 flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-semibold">Run {detail.run.id.slice(0, 8)}</h1>
+        <StrategyBadge strategy={detail.run.strategy} />
         <Badge>{detail.run.status}</Badge>
       </div>
       <p className="mt-2 text-sm text-muted">
-        Strategy {detail.run.strategy} · mapping {detail.run.mappingRulesVersion} · compiled{" "}
-        {detail.run.compiledCount}/{detail.run.objectCount} · tested {detail.run.testedCount} ·
-        waiting {detail.run.waitingDependencyCount}
+        Mapping {detail.run.mappingRulesVersion} · compiled {detail.run.compiledCount}/
+        {detail.run.objectCount} · tested {detail.run.testedCount} · waiting{" "}
+        {detail.run.waitingDependencyCount}
       </p>
       {detail.run.errorMessage ? (
         <p className="mt-2 text-sm text-danger">{detail.run.errorMessage}</p>
@@ -153,7 +158,13 @@ export default function RunDetailPage() {
         </Link>
       </p>
       <div className="mt-4 flex max-w-3xl flex-wrap gap-3">
-        <Select value={status} onChange={(event) => setStatus(event.target.value)}>
+        <Select
+          value={status}
+          onChange={(event) => {
+            setPage(1);
+            setStatus(event.target.value);
+          }}
+        >
           <option value="">All statuses</option>
           <option value="VALIDATED">VALIDATED</option>
           <option value="FAILED">FAILED</option>
@@ -164,7 +175,10 @@ export default function RunDetailPage() {
         </Select>
         <Select
           value={reconcileAction}
-          onChange={(event) => setReconcileAction(event.target.value)}
+          onChange={(event) => {
+            setPage(1);
+            setReconcileAction(event.target.value);
+          }}
         >
           <option value="">All target actions</option>
           <option value="CREATE_REQUIRED">needs create</option>
@@ -231,6 +245,17 @@ export default function RunDetailPage() {
             ))}
           </tbody>
         </table>
+        {detail.total > detail.pageSize ? (
+          <div className="border-t border-border px-4 py-3">
+            <Pagination
+              page={detail.page}
+              pageSize={detail.pageSize}
+              total={detail.total}
+              onPageChange={setPage}
+              label="objects"
+            />
+          </div>
+        ) : null}
       </Card>
       <CardTitle className="sr-only">Objects</CardTitle>
     </div>

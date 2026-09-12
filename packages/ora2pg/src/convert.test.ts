@@ -45,6 +45,29 @@ describe("convertOracleDdl", () => {
     expect(result.sql).not.toContain("PCTFREE");
   });
 
+  test("virtual columns and bitmap indexes stay succeeded with warnings, not review", () => {
+    const table = convertOracleDdl({
+      objectType: "TABLE",
+      owner: "WMS1",
+      name: "ITEMS",
+      sourceText: `CREATE TABLE "WMS1"."ITEMS" (
+        "PK" NUMBER(19,0) NOT NULL ENABLE,
+        "LABEL" VARCHAR2(20) GENERATED ALWAYS AS (UPPER("NAME")) VIRTUAL
+      )`,
+    });
+    expect(table.status).toBe("SUCCEEDED");
+    expect(table.warnings.some((warning) => warning.includes("Virtual"))).toBe(true);
+
+    const index = convertOracleDdl({
+      objectType: "INDEX",
+      owner: "WMS1",
+      name: "IX_ITEMS_BITMAP",
+      sourceText: `CREATE BITMAP INDEX "WMS1"."IX_ITEMS_BITMAP" ON "WMS1"."ITEMS" ("PK")`,
+    });
+    expect(index.status).toBe("SUCCEEDED");
+    expect(index.warnings.some((warning) => warning.includes("BITMAP"))).toBe(true);
+  });
+
   test("converts a sequence and strips Oracle-only clauses", () => {
     const result = convertOracleDdl({
       objectType: "SEQUENCE",

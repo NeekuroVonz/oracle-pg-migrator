@@ -194,6 +194,12 @@ export default function AiProvidersPage() {
               Auto-filled for {kind}: {AI_KIND_DEFAULTS[kind].baseUrl}. Override only for a proxy or
               compatible server.
             </p>
+            {kind === "cursor" ? (
+              <p className="mt-2 text-sm text-muted">
+                Default Cursor uses Agent.prompt (same as oracle2pg-ai), not Chat Completions. Leave
+                Base URL as api.cursor.com. Override only for an OpenAI-compatible proxy.
+              </p>
+            ) : null}
           </div>
           <div>
             <Label htmlFor="apiKey">API key</Label>

@@ -12,7 +12,9 @@
     "build": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@migrator/ai-core": "workspace:*"
+    "@cursor/sdk": "^1.0.27",
+    "@migrator/ai-core": "workspace:*",
+    "@migrator/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.3.1",

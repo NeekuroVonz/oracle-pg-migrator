@@ -631,16 +631,17 @@ export function classifyThreeWay(input: ThreeWayInput): ThreeWayResult {
 
 export function populatedBlocksAutoUpdate(diff: ReconcileDiff): boolean {
   return diff.changes.some((changeItem) => {
-    if (changeItem.kind === "add_column" && changeItem.destructive) {
-      return true;
+    if (changeItem.kind === "add_column") {
+      return changeItem.destructive;
+    }
+    if (changeItem.kind === "alter_column_type" || changeItem.kind === "alter_column_null") {
+      return changeItem.destructive;
     }
     return (
       changeItem.kind === "add_constraint" ||
       changeItem.kind === "alter_constraint" ||
       changeItem.kind === "drop_column" ||
-      changeItem.kind === "drop_constraint" ||
-      changeItem.kind === "alter_column_null" ||
-      changeItem.kind === "alter_column_type"
+      changeItem.kind === "drop_constraint"
     );
   });
 }

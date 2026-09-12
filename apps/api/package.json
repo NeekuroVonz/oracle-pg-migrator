@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@migrator/ai-core": "workspace:*",
+    "@migrator/ai-cursor": "workspace:*",
     "@migrator/config": "workspace:*",
     "@migrator/db": "workspace:*",
     "@migrator/dependency-graph": "workspace:*",

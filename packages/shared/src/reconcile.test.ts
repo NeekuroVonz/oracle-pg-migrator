@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyThreeWay, diffPgShapes, hashPgShape, type PgTableShape } from "./reconcile";
+import { classifyThreeWay, diffPgShapes, hashPgShape, populatedBlocksAutoUpdate, type PgTableShape } from "./reconcile";
 
 function table(
   columns: PgTableShape["columns"],
@@ -79,6 +79,21 @@ describe("diffPgShapes", () => {
     );
     expect(shrink.destructive).toBe(true);
     expect(widen.destructive).toBe(false);
+  });
+
+  test("widening a populated column does not block auto-update", () => {
+    const actual = table([{ name: "code", type: "varchar(20)", nullable: true, default: null }]);
+    const desired = table([{ name: "code", type: "varchar(40)", nullable: true, default: null }]);
+    expect(populatedBlocksAutoUpdate(diffPgShapes(desired, actual))).toBe(false);
+  });
+
+  test("dropping a column on a populated table blocks auto-update", () => {
+    const actual = table([
+      { name: "pk", type: "bigint", nullable: false, default: null },
+      { name: "note", type: "text", nullable: true, default: null },
+    ]);
+    const desired = table([{ name: "pk", type: "bigint", nullable: false, default: null }]);
+    expect(populatedBlocksAutoUpdate(diffPgShapes(desired, actual))).toBe(true);
   });
 });
 

@@ -86,4 +86,29 @@ describe("createMigrationAiProvider", () => {
     expect(result.verdict).toBe("OK");
     expect(JSON.stringify(result)).not.toContain("VALIDATED");
   });
+
+  test("refuses Cursor Agent hosts from the HTTP factory", async () => {
+    const provider = createMigrationAiProvider({
+      id: "p1",
+      kind: "cursor",
+      name: "cursor",
+      model: "gpt-4o-mini",
+      apiKey: "crsr-test",
+      roles: { convert: true, fix: true, verify: true },
+      fetchImpl: async () => {
+        throw new Error("must not call Cursor Cloud for chat completions");
+      },
+    });
+    await expect(provider.listModels()).rejects.toThrow(/createCursorProvider/i);
+    await expect(
+      provider.fix({
+        objectType: "TABLE",
+        owner: "HR",
+        name: "EMP",
+        sourceText: "CREATE TABLE emp (id NUMBER)",
+        currentSql: "CREATE TABLE emp (id bigint);",
+        compileError: "syntax error",
+      }),
+    ).rejects.toThrow(/createCursorProvider/i);
+  });
 });

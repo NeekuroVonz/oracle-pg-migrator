@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { AI_KIND_DEFAULTS, defaultAiBaseUrl } from "./ai-defaults";
+import {
+  AI_KIND_DEFAULTS,
+  defaultAiBaseUrl,
+  isCursorCloudApiHost,
+  usesCursorAgent,
+} from "./ai-defaults";
 
 describe("AI provider defaults", () => {
   test("fills a host per kind and keeps explicit overrides", () => {
@@ -11,6 +16,12 @@ describe("AI provider defaults", () => {
     expect(defaultAiBaseUrl("cursor", "https://proxy.example/v1/")).toBe(
       "https://proxy.example/v1",
     );
-    expect(AI_KIND_DEFAULTS.cursor.baseUrl).not.toContain("openai.com");
+    expect(AI_KIND_DEFAULTS.cursor.model).toBe("composer-2.5");
+    expect(isCursorCloudApiHost("https://api.cursor.com/v1")).toBe(true);
+    expect(isCursorCloudApiHost("https://proxy.example/v1")).toBe(false);
+    expect(usesCursorAgent("cursor")).toBe(true);
+    expect(usesCursorAgent("cursor", "https://api.cursor.com/v1")).toBe(true);
+    expect(usesCursorAgent("cursor", "https://proxy.example/v1")).toBe(false);
+    expect(usesCursorAgent("openai")).toBe(false);
   });
 });
