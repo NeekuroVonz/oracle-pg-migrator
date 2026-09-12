@@ -1,0 +1,115 @@
+services:
+  metadata-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: migrator
+      POSTGRES_PASSWORD: migrator
+      POSTGRES_DB: migrator
+    ports:
+      - "5433:5432"
+    volumes:
+      - metadata_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U migrator -d migrator"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  validator-postgres:
+    build:
+      context: ..
+      dockerfile: docker/postgres-validator/Dockerfile
+    image: migrator-postgres-validator:local
+    environment:
+      POSTGRES_USER: validator
+      POSTGRES_PASSWORD: validator
+      POSTGRES_DB: validator
+    ports:
+      - "5434:5432"
+    volumes:
+      - validator_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U validator -d validator"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/api/Dockerfile
+    depends_on:
+      metadata-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      validator-postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://migrator:migrator@metadata-postgres:5432/migrator
+      REDIS_URL: redis://redis:6379
+      WEB_ORIGIN: http://localhost:3000
+      API_HOST: 0.0.0.0
+      API_PORT: 3001
+      SECRETS_MASTER_KEY: ${SECRETS_MASTER_KEY}
+      VALIDATOR_DATABASE_URL: postgres://validator:validator@validator-postgres:5432/validator
+      VALIDATOR_POOL_SIZE: 2
+      VALIDATOR_MODE: database
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:3001/health').then(r => { if (!r.ok) process.exit(1) })"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/worker/Dockerfile
+    depends_on:
+      metadata-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      validator-postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://migrator:migrator@metadata-postgres:5432/migrator
+      REDIS_URL: redis://redis:6379
+      API_HOST: 0.0.0.0
+      WORKER_HEALTH_PORT: 3002
+      SECRETS_MASTER_KEY: ${SECRETS_MASTER_KEY}
+      VALIDATOR_DATABASE_URL: postgres://validator:validator@validator-postgres:5432/validator
+      VALIDATOR_POOL_SIZE: 2
+      VALIDATOR_MODE: database
+    ports:
+      - "3002:3002"
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/web/Dockerfile
+    depends_on:
+      - api
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+    ports:
+      - "3000:3000"
+
+volumes:
+  metadata_pg:
+  validator_pg:

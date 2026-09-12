@@ -1,0 +1,28 @@
+{
+  "name": "@migrator/db",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test",
+    "build": "tsc --noEmit -p tsconfig.json",
+    "generate": "drizzle-kit generate",
+    "migrate": "bun src/migrate.ts"
+  },
+  "dependencies": {
+    "@migrator/config": "workspace:*",
+    "@migrator/shared": "workspace:*",
+    "drizzle-orm": "^0.44.5",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.1",
+    "@types/pg": "^8.15.5",
+    "drizzle-kit": "^0.31.4",
+    "typescript": "^5.9.2"
+  }
+}

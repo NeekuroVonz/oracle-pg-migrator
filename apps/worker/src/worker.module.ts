@@ -1,0 +1,368 @@
+import { AesGcmSecretCipher, type AppEnv, loadEnv, type SecretCipher } from "@migrator/config";
+import {
+  AiProvidersRepository,
+  AuditRepository,
+  ConnectionsRepository,
+  ConversionAttemptsRepository,
+  createDatabase,
+  createPool,
+  DataCopyRunsRepository,
+  DataCopyTablesRepository,
+  DeployObjectsRepository,
+  DeployRunsRepository,
+  DiscoveredObjectsRepository,
+  DiscoveryRunsRepository,
+  type MetadataDatabase,
+  MigrationReportsRepository,
+  MigrationRunObjectsRepository,
+  MigrationRunsRepository,
+  MigrationScopesRepository,
+  ObjectDependenciesRepository,
+  TestAttemptsRepository,
+  ValidationAttemptsRepository,
+} from "@migrator/db";
+import { Module } from "@nestjs/common";
+import type { Pool } from "pg";
+import { ConversionQueueWorker } from "./conversion/conversion.worker";
+import { DataCopyQueueWorker } from "./data-copy/data-copy.worker";
+import { DeployQueueWorker } from "./deploy/deploy.worker";
+import { DiscoveryQueueWorker } from "./discovery/discovery.worker";
+import { HealthQueueWorker } from "./health.worker";
+import { ReportingQueueWorker } from "./report/report.worker";
+import { ValidationQueueWorker } from "./validation/validation.worker";
+
+export const ENV = "APP_ENV";
+export const DB_POOL = "DB_POOL";
+export const DATABASE = "DATABASE";
+export const SECRET_CIPHER = "SECRET_CIPHER";
+
+@Module({
+  providers: [
+    {
+      provide: ENV,
+      useFactory: (): AppEnv => loadEnv(),
+    },
+    {
+      provide: DB_POOL,
+      inject: [ENV],
+      useFactory: (env: AppEnv): Pool => createPool(env.DATABASE_URL),
+    },
+    {
+      provide: DATABASE,
+      inject: [DB_POOL],
+      useFactory: (pool: Pool): MetadataDatabase => createDatabase(pool),
+    },
+    {
+      provide: SECRET_CIPHER,
+      inject: [ENV],
+      useFactory: (env: AppEnv): SecretCipher => new AesGcmSecretCipher(env.SECRETS_MASTER_KEY),
+    },
+    {
+      provide: ConnectionsRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new ConnectionsRepository(db),
+    },
+    {
+      provide: DiscoveryRunsRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new DiscoveryRunsRepository(db),
+    },
+    {
+      provide: DiscoveredObjectsRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new DiscoveredObjectsRepository(db),
+    },
+    {
+      provide: ObjectDependenciesRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new ObjectDependenciesRepository(db),
+    },
+    {
+      provide: AuditRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new AuditRepository(db),
+    },
+    {
+      provide: MigrationScopesRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new MigrationScopesRepository(db),
+    },
+    {
+      provide: MigrationRunsRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new MigrationRunsRepository(db),
+    },
+    {
+      provide: MigrationRunObjectsRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new MigrationRunObjectsRepository(db),
+    },
+    {
+      provide: ConversionAttemptsRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new ConversionAttemptsRepository(db),
+    },
+    {
+      provide: ValidationAttemptsRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new ValidationAttemptsRepository(db),
+    },
+    {
+      provide: AiProvidersRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new AiProvidersRepository(db),
+    },
+    {
+      provide: TestAttemptsRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new TestAttemptsRepository(db),
+    },
+    {
+      provide: MigrationReportsRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new MigrationReportsRepository(db),
+    },
+    {
+      provide: DataCopyRunsRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new DataCopyRunsRepository(db),
+    },
+    {
+      provide: DataCopyTablesRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new DataCopyTablesRepository(db),
+    },
+    {
+      provide: DeployRunsRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new DeployRunsRepository(db),
+    },
+    {
+      provide: DeployObjectsRepository,
+      inject: [DATABASE],
+      useFactory: (db: MetadataDatabase) => new DeployObjectsRepository(db),
+    },
+    {
+      provide: HealthQueueWorker,
+      inject: [ENV, DB_POOL],
+      useFactory: (env: AppEnv, pool: Pool) => new HealthQueueWorker(env, pool),
+    },
+    {
+      provide: DiscoveryQueueWorker,
+      inject: [
+        ENV,
+        SECRET_CIPHER,
+        ConnectionsRepository,
+        DiscoveryRunsRepository,
+        DiscoveredObjectsRepository,
+        ObjectDependenciesRepository,
+        AuditRepository,
+      ],
+      useFactory: (
+        env: AppEnv,
+        cipher: SecretCipher,
+        connections: ConnectionsRepository,
+        runs: DiscoveryRunsRepository,
+        objects: DiscoveredObjectsRepository,
+        dependencies: ObjectDependenciesRepository,
+        audit: AuditRepository,
+      ) => new DiscoveryQueueWorker(env, cipher, connections, runs, objects, dependencies, audit),
+    },
+    {
+      provide: ConversionQueueWorker,
+      inject: [
+        ENV,
+        SECRET_CIPHER,
+        MigrationRunsRepository,
+        MigrationRunObjectsRepository,
+        DiscoveredObjectsRepository,
+        MigrationScopesRepository,
+        ObjectDependenciesRepository,
+        ConversionAttemptsRepository,
+        AuditRepository,
+        ConnectionsRepository,
+        AiProvidersRepository,
+      ],
+      useFactory: (
+        env: AppEnv,
+        cipher: SecretCipher,
+        runs: MigrationRunsRepository,
+        runObjects: MigrationRunObjectsRepository,
+        objects: DiscoveredObjectsRepository,
+        scopes: MigrationScopesRepository,
+        dependencies: ObjectDependenciesRepository,
+        attempts: ConversionAttemptsRepository,
+        audit: AuditRepository,
+        connections: ConnectionsRepository,
+        aiProviders: AiProvidersRepository,
+      ) =>
+        new ConversionQueueWorker(
+          env,
+          cipher,
+          runs,
+          runObjects,
+          objects,
+          scopes,
+          dependencies,
+          attempts,
+          audit,
+          connections,
+          aiProviders,
+        ),
+    },
+    {
+      provide: ValidationQueueWorker,
+      inject: [
+        ENV,
+        SECRET_CIPHER,
+        MigrationRunsRepository,
+        MigrationRunObjectsRepository,
+        DiscoveredObjectsRepository,
+        ObjectDependenciesRepository,
+        ValidationAttemptsRepository,
+        ConversionAttemptsRepository,
+        TestAttemptsRepository,
+        AuditRepository,
+        ConnectionsRepository,
+        AiProvidersRepository,
+      ],
+      useFactory: (
+        env: AppEnv,
+        cipher: SecretCipher,
+        runs: MigrationRunsRepository,
+        runObjects: MigrationRunObjectsRepository,
+        objects: DiscoveredObjectsRepository,
+        dependencies: ObjectDependenciesRepository,
+        validations: ValidationAttemptsRepository,
+        attempts: ConversionAttemptsRepository,
+        testAttempts: TestAttemptsRepository,
+        audit: AuditRepository,
+        connections: ConnectionsRepository,
+        aiProviders: AiProvidersRepository,
+      ) =>
+        new ValidationQueueWorker(
+          env,
+          cipher,
+          runs,
+          runObjects,
+          objects,
+          dependencies,
+          validations,
+          attempts,
+          testAttempts,
+          audit,
+          connections,
+          aiProviders,
+        ),
+    },
+    {
+      provide: ReportingQueueWorker,
+      inject: [
+        ENV,
+        MigrationRunsRepository,
+        MigrationRunObjectsRepository,
+        ObjectDependenciesRepository,
+        ValidationAttemptsRepository,
+        TestAttemptsRepository,
+        MigrationReportsRepository,
+        AuditRepository,
+      ],
+      useFactory: (
+        env: AppEnv,
+        runs: MigrationRunsRepository,
+        runObjects: MigrationRunObjectsRepository,
+        dependencies: ObjectDependenciesRepository,
+        validations: ValidationAttemptsRepository,
+        tests: TestAttemptsRepository,
+        reports: MigrationReportsRepository,
+        audit: AuditRepository,
+      ) =>
+        new ReportingQueueWorker(
+          env,
+          runs,
+          runObjects,
+          dependencies,
+          validations,
+          tests,
+          reports,
+          audit,
+        ),
+    },
+    {
+      provide: DataCopyQueueWorker,
+      inject: [
+        ENV,
+        SECRET_CIPHER,
+        ConnectionsRepository,
+        DataCopyRunsRepository,
+        DataCopyTablesRepository,
+        MigrationRunsRepository,
+        MigrationRunObjectsRepository,
+        ObjectDependenciesRepository,
+        ValidationAttemptsRepository,
+        TestAttemptsRepository,
+        MigrationReportsRepository,
+        AuditRepository,
+      ],
+      useFactory: (
+        env: AppEnv,
+        cipher: SecretCipher,
+        connections: ConnectionsRepository,
+        copyRuns: DataCopyRunsRepository,
+        copyTables: DataCopyTablesRepository,
+        runs: MigrationRunsRepository,
+        runObjects: MigrationRunObjectsRepository,
+        dependencies: ObjectDependenciesRepository,
+        validations: ValidationAttemptsRepository,
+        tests: TestAttemptsRepository,
+        reports: MigrationReportsRepository,
+        audit: AuditRepository,
+      ) =>
+        new DataCopyQueueWorker(
+          env,
+          cipher,
+          connections,
+          copyRuns,
+          copyTables,
+          runs,
+          runObjects,
+          dependencies,
+          validations,
+          tests,
+          reports,
+          audit,
+        ),
+    },
+    {
+      provide: DeployQueueWorker,
+      inject: [
+        ENV,
+        SECRET_CIPHER,
+        ConnectionsRepository,
+        DeployRunsRepository,
+        DeployObjectsRepository,
+        DiscoveredObjectsRepository,
+        AuditRepository,
+      ],
+      useFactory: (
+        env: AppEnv,
+        cipher: SecretCipher,
+        connections: ConnectionsRepository,
+        deployRuns: DeployRunsRepository,
+        deployObjects: DeployObjectsRepository,
+        discovered: DiscoveredObjectsRepository,
+        audit: AuditRepository,
+      ) =>
+        new DeployQueueWorker(
+          env,
+          cipher,
+          connections,
+          deployRuns,
+          deployObjects,
+          discovered,
+          audit,
+        ),
+    },
+  ],
+})
+export class WorkerModule {}

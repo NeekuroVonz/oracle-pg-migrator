@@ -1,0 +1,1 @@
+Pre-warmed PostgreSQL validator image. Compose starts a shared validator-postgres service; `packages/docker-manager` creates a small pool of isolated databases on it and reuses them. Do not start one container per object.

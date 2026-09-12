@@ -1,0 +1,38 @@
+{
+  "name": "@migrator/worker",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch --env-file=../../.env src/main.ts",
+    "start": "bun src/main.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test",
+    "build": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@migrator/ai-core": "workspace:*",
+    "@migrator/config": "workspace:*",
+    "@migrator/db": "workspace:*",
+    "@migrator/dependency-graph": "workspace:*",
+    "@migrator/docker-manager": "workspace:*",
+    "@migrator/ora2pg": "workspace:*",
+    "@migrator/oracle": "workspace:*",
+    "@migrator/postgres": "workspace:*",
+    "@migrator/queue": "workspace:*",
+    "@migrator/shared": "workspace:*",
+    "@migrator/validator": "workspace:*",
+    "@nestjs/common": "^11.1.6",
+    "@nestjs/core": "^11.1.6",
+    "bullmq": "^5.58.5",
+    "ioredis": "^5.8.0",
+    "pg": "^8.16.3",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.1",
+    "@types/pg": "^8.15.5",
+    "typescript": "^5.9.2"
+  }
+}
