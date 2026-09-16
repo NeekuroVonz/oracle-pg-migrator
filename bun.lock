@@ -4,6 +4,11 @@
   "workspaces": {
     "": {
       "name": "oracle-pg-migrator",
+      "dependencies": {
+        "@migrator/config": "workspace:*",
+        "@migrator/db": "workspace:*",
+        "@migrator/shared": "workspace:*",
+      },
       "devDependencies": {
         "@biomejs/biome": "^2.3.4",
         "turbo": "^2.5.8",
