@@ -52,6 +52,7 @@ export class DataCopyRunsRepository {
         | "failedCount"
         | "matchedCount"
         | "errorMessage"
+        | "cancelRequested"
         | "startedAt"
         | "finishedAt"
       >

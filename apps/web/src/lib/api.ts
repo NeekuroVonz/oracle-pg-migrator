@@ -14,7 +14,6 @@ import type {
   MigrationReportDto,
   MigrationReportSqlDto,
   MigrationRunDto,
-  MigrationStrategy,
   ObjectDagDto,
   ObjectDependencyDto,
   ProjectDto,
@@ -136,6 +135,14 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(input),
     }),
+  includeScopeObjects: (projectId: string, objects: string[]) =>
+    request<{ scope: ScopeDto; included: string[] }>(
+      `/api/projects/${projectId}/scope/include-objects`,
+      {
+        method: "POST",
+        body: JSON.stringify({ objects }),
+      },
+    ),
   previewScope: (
     projectId: string,
     input: UpsertScopeInput,
@@ -154,10 +161,14 @@ export const api = {
     );
   },
   listRuns: (projectId: string) => request<MigrationRunDto[]>(`/api/projects/${projectId}/runs`),
-  startRun: (projectId: string, input: StartConversionInput = { strategy: "FAST" }) =>
+  startRun: (projectId: string, input: StartConversionInput = { strategy: "FAST", tracks: ["SCHEMA"] }) =>
     request<MigrationRunDto>(`/api/projects/${projectId}/runs`, {
       method: "POST",
       body: JSON.stringify(input),
+    }),
+  stopRun: (projectId: string, runId: string) =>
+    request<MigrationRunDto>(`/api/projects/${projectId}/runs/${runId}/stop`, {
+      method: "POST",
     }),
   getRun: (
     projectId: string,
@@ -177,9 +188,16 @@ export const api = {
   },
   getRunObject: (projectId: string, runId: string, objectId: string) =>
     request<ConversionObjectDto>(`/api/projects/${projectId}/runs/${runId}/objects/${objectId}`),
-  getProjectDag: (projectId: string, strategy?: MigrationStrategy) => {
-    const suffix = strategy ? `?strategy=${strategy}` : "";
-    return request<ObjectDagDto>(`/api/projects/${projectId}/dag${suffix}`);
+  getProjectDag: (projectId: string, query: { strategy?: string; tracks?: string[] } = {}) => {
+    const params = new URLSearchParams();
+    if (query.strategy) {
+      params.set("strategy", query.strategy);
+    }
+    if (query.tracks !== undefined) {
+      params.set("tracks", query.tracks.join(","));
+    }
+    const suffix = params.toString();
+    return request<ObjectDagDto>(`/api/projects/${projectId}/dag${suffix ? `?${suffix}` : ""}`);
   },
   getRunDag: (projectId: string, runId: string) =>
     request<ObjectDagDto>(`/api/projects/${projectId}/runs/${runId}/dag`),
@@ -193,6 +211,16 @@ export const api = {
     request<DataCopyRunDto>(`/api/projects/${projectId}/runs/${runId}/data-copy`, {
       method: "POST",
       body: JSON.stringify(input),
+    }),
+  resumeFailedDataCopy: (projectId: string, runId: string) =>
+    request<DataCopyRunDto>(`/api/projects/${projectId}/runs/${runId}/data-copy/resume-failed`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  pauseDataCopy: (projectId: string, runId: string) =>
+    request<DataCopyRunDto>(`/api/projects/${projectId}/runs/${runId}/data-copy/pause`, {
+      method: "POST",
+      body: JSON.stringify({}),
     }),
   getRunDeploy: (projectId: string, runId: string) =>
     request<DeployRunDto | null>(`/api/projects/${projectId}/runs/${runId}/deploy`),

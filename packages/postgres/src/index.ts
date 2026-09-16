@@ -6,6 +6,7 @@ export {
   qualifiedTable,
   quotePgIdent,
   truncatePostgresTable,
+  widenIntegerColumnsToNumeric,
 } from "./bulk-load";
 export {
   type PostgresTargetConfig,
@@ -20,6 +21,13 @@ export {
 } from "./inspect";
 export { parseDesiredSql } from "./parse-desired";
 export { emitCreateFromShape, emitReconcileSql } from "./plan";
+export {
+  applySqlDroppingDependentViews,
+  dropDependentViews,
+  listDependentViews,
+  recreateDependentViews,
+  type DependentView,
+} from "./dependent-views";
 export {
   type ReconcileObjectInput,
   type ReconcileObjectResult,

@@ -2,11 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { ORACLE_OBJECT_TYPES } from "./enums";
 import type { UpsertScopeInput } from "./schemas";
 import {
-  buildScopePreview,
   evaluateScopeObject,
+  forceIncludeObjectsInScope,
   matchesGlob,
   objectMatchesPattern,
+  refsIncludedInScope,
   selectDataTables,
+  buildScopePreview,
 } from "./scope";
 
 const rules: UpsertScopeInput = {
@@ -37,6 +39,61 @@ describe("scope matching", () => {
     );
     expect(evaluateScopeObject(obj("4", "CLV", "TMP_LOAD"), rules).reason).toBe("exclude_pattern");
     expect(evaluateScopeObject(obj("5", "CLV", "CUSTOMER"), rules).reason).toBe("include_pattern");
+  });
+
+  test("forceIncludeObjectsInScope removes matching exclude globs for one table only", () => {
+    const catalog = [
+      obj("1", "WMS1", "TCO_ABCODE_NO_USE"),
+      obj("2", "WMS1", "TCO_ABCODEGRP_NO_USE"),
+      obj("3", "WMS1", "TCO_ABCODE"),
+    ];
+    const next = forceIncludeObjectsInScope(
+      {
+        includeSchemas: ["WMS1"],
+        includeObjectTypes: [...ORACLE_OBJECT_TYPES],
+        includeNamePatterns: [],
+        excludeNamePatterns: ["*_NO_USE"],
+        excludeObjects: [],
+        dataMode: "NONE",
+        selectedTables: [],
+      },
+      catalog,
+      [{ owner: "WMS1", name: "TCO_ABCODE_NO_USE" }],
+    );
+    expect(evaluateScopeObject(catalog[0]!, next).included).toBe(true);
+    expect(evaluateScopeObject(catalog[1]!, next).included).toBe(false);
+    expect(evaluateScopeObject(catalog[2]!, next).included).toBe(true);
+    expect(next.excludeNamePatterns).not.toContain("*_NO_USE");
+    expect(next.excludeObjects).toContain("WMS1.TCO_ABCODEGRP_NO_USE");
+  });
+
+  test("forceIncludeObjectsInScope appends allow-list entries so excluded-by-include tables enter scope", () => {
+    const catalog = [
+      obj("1", "WMS1", "ORDERS"),
+      obj("2", "WMS1", "TLG_DAILY_TMP_1"),
+      obj("3", "WMS1", "TLG_DAILY_TMP_1_IDX01", "INDEX"),
+    ];
+    const before = {
+      includeSchemas: ["WMS1"],
+      includeObjectTypes: [...ORACLE_OBJECT_TYPES],
+      includeNamePatterns: ["ORDERS", "TLG_DAILY_TMP_1_IDX01"],
+      excludeNamePatterns: [],
+      excludeObjects: [],
+      dataMode: "NONE" as const,
+      selectedTables: [],
+    };
+    expect(evaluateScopeObject(catalog[1]!, before).included).toBe(false);
+    expect(evaluateScopeObject(catalog[1]!, before).reason).toBe("include_pattern");
+    const next = forceIncludeObjectsInScope(before, catalog, [
+      { owner: "WMS1", name: "TLG_DAILY_TMP_1" },
+    ]);
+    expect(evaluateScopeObject(catalog[1]!, next).included).toBe(true);
+    expect(next.includeNamePatterns).toContain("WMS1.TLG_DAILY_TMP_1");
+    // Must not collapse allow-list to only the forced table.
+    expect(evaluateScopeObject(catalog[0]!, next).included).toBe(true);
+    expect(refsIncludedInScope(next, ["WMS1.TLG_DAILY_TMP_1", "WMS1.MISSING"])).toEqual([
+      "WMS1.TLG_DAILY_TMP_1",
+    ]);
   });
 
   test("exact exclusions match OWNER.NAME", () => {

@@ -16,6 +16,7 @@ import {
 } from "./catalog";
 import { CATALOG_SQL } from "./catalog-sql";
 import { NodeOracleDriver } from "./node-oracle-driver";
+import { normalizeOracleRows } from "./normalize-rows";
 import { ddlDictionaryType, SYSTEM_ORACLE_SCHEMAS } from "./object-types";
 import { isMissingOracleDictionary, wrapOracleQueryError } from "./oracle-errors";
 import { assertOracleSelect } from "./sql-classifier";
@@ -361,7 +362,8 @@ export class OracleReadOnlyClient {
   }): Promise<unknown[][]> {
     const sql = buildTableChunkSql(input);
     assertOracleSelect(sql);
-    return this.withSession(async (session) => this.select(session, sql));
+    const rows = await this.withSession(async (session) => this.select(session, sql));
+    return normalizeOracleRows(rows);
   }
 
   private async openSession(): Promise<OracleSession> {

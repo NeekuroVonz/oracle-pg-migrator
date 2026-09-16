@@ -340,6 +340,7 @@ export const SECRET_CIPHER = "SECRET_CIPHER";
         MigrationReportsRepository,
         DeployRunsRepository,
         DeployObjectsRepository,
+        DiscoveredObjectsRepository,
         AuditRepository,
       ],
       useFactory: (
@@ -352,6 +353,7 @@ export const SECRET_CIPHER = "SECRET_CIPHER";
         reports: MigrationReportsRepository,
         deployRuns: DeployRunsRepository,
         deployObjects: DeployObjectsRepository,
+        discovered: DiscoveredObjectsRepository,
         audit: AuditRepository,
       ) =>
         new DeployService(
@@ -364,6 +366,7 @@ export const SECRET_CIPHER = "SECRET_CIPHER";
           reports,
           deployRuns,
           deployObjects,
+          discovered,
           audit,
         ),
     },

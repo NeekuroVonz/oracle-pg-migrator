@@ -282,6 +282,7 @@ export const migrationRunStatusEnum = pgEnum("migration_run_status", [
   "RUNNING",
   "SUCCEEDED",
   "FAILED",
+  "CANCELLED",
 ]);
 
 export const conversionAttemptStatusEnum = pgEnum("conversion_attempt_status", [
@@ -496,6 +497,7 @@ export const dataCopyRunStatusEnum = pgEnum("data_copy_run_status", [
   "RUNNING",
   "SUCCEEDED",
   "FAILED",
+  "CANCELLED",
 ]);
 
 export const dataCopyTableStatusEnum = pgEnum("data_copy_table_status", [
@@ -523,6 +525,7 @@ export const dataCopyRuns = pgTable(
     failedCount: integer("failed_count").notNull().default(0),
     matchedCount: integer("matched_count").notNull().default(0),
     errorMessage: text("error_message"),
+    cancelRequested: boolean("cancel_requested").notNull().default(false),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     ...timestamps,

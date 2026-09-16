@@ -10,11 +10,12 @@ import { buildObjectDag, type DagObjectInput, toObjectDagDto } from "@migrator/d
 import {
   AppError,
   evaluateScopeCatalog,
-  isPhase4ObjectType,
-  type MigrationStrategy,
+  type ConversionTrack,
+  CONVERSION_TRACKS,
   NotFoundError,
   type ObjectDagDto,
   type ObjectDagQuery,
+  typesForTracks,
 } from "@migrator/shared";
 import { Injectable } from "@nestjs/common";
 
@@ -68,10 +69,22 @@ export class DagService {
       selectedTables: saved.selectedTables,
     };
     const included = evaluateScopeCatalog(catalog, rules).filter((row) => row.included);
-    const strategy: MigrationStrategy = query.strategy ?? "FAST";
-    const useAiConvert = strategy === "MAXIMUM_ACCURACY";
+    const tracks: ConversionTrack[] =
+      query.tracks !== undefined
+        ? query.tracks
+        : query.strategy === "MAXIMUM_ACCURACY"
+          ? [...CONVERSION_TRACKS]
+          : ["SCHEMA", "VIEWS"];
+    const selectedTypes = typesForTracks(tracks);
+    const catalogById = new Map(catalog.map((row) => [row.id, row]));
     const unavailableIds = included
-      .filter((row) => !isPhase4ObjectType(row.objectType) && !useAiConvert)
+      .filter((row) => {
+        if (selectedTypes.has(row.objectType)) {
+          return false;
+        }
+        const live = catalogById.get(row.id);
+        return !live?.targetSql || live.status === "FAILED";
+      })
       .map((row) => row.id);
     const edges = await this.dependencies.listByProject(projectId);
     return toObjectDagDto(

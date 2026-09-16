@@ -1,5 +1,6 @@
 import { Client } from "pg";
 import { type PostgresTargetConfig, postgresSslOption } from "./connection-test";
+import { applySqlDroppingDependentViews } from "./dependent-views";
 
 export function createPostgresClient(
   config: PostgresTargetConfig,
@@ -81,4 +82,40 @@ export async function truncatePostgresTable(
   table: string,
 ): Promise<void> {
   await client.query(`TRUNCATE TABLE ${qualifiedTable(schema, table)}`);
+}
+
+/**
+ * Widen smallint/integer/bigint → numeric so Oracle NUMBER fractional values can load.
+ * Safe before/after TRUNCATE; used when TARGET was deployed with the old integer mapping.
+ */
+export async function widenIntegerColumnsToNumeric(
+  client: Client,
+  schema: string,
+  table: string,
+): Promise<string[]> {
+  const result = await client.query<{ column_name: string; data_type: string }>(
+    `SELECT column_name, data_type
+     FROM information_schema.columns
+     WHERE table_schema = $1
+       AND table_name = $2
+       AND data_type IN ('smallint', 'integer', 'bigint')
+     ORDER BY ordinal_position`,
+    [schema, table],
+  );
+  const altered: string[] = [];
+  const statements: string[] = [];
+  for (const row of result.rows) {
+    const col = quotePgIdent(row.column_name);
+    const qualified = qualifiedTable(schema, table);
+    statements.push(
+      `ALTER TABLE ${qualified} ALTER COLUMN ${col} TYPE numeric USING ${col}::numeric`,
+    );
+    altered.push(row.column_name);
+  }
+  if (statements.length > 0) {
+    await applySqlDroppingDependentViews(client, schema, table, `${statements.join(";\n")};`, (sql) =>
+      client.query(sql),
+    );
+  }
+  return altered;
 }

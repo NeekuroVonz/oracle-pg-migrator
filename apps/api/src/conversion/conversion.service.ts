@@ -4,6 +4,7 @@ import {
   ConnectionsRepository,
   ConversionAttemptsRepository,
   DiscoveredObjectsRepository,
+  formatDatabaseError,
   MigrationRunObjectsRepository,
   MigrationRunsRepository,
   MigrationScopesRepository,
@@ -26,13 +27,16 @@ import {
   MAPPING_RULES_VERSION,
   type MigrationStrategy,
   NotFoundError,
+  parseRunTracks,
   type StartConversionInput,
+  type ValidationJobData,
 } from "@migrator/shared";
 import { Injectable, type OnModuleDestroy } from "@nestjs/common";
 
 @Injectable()
 export class ConversionService implements OnModuleDestroy {
   private readonly queue: ReturnType<typeof createQueue<ConversionJobData>>;
+  private readonly validationQueue: ReturnType<typeof createQueue<ValidationJobData>>;
 
   constructor(
     readonly env: AppEnv,
@@ -48,10 +52,12 @@ export class ConversionService implements OnModuleDestroy {
     private readonly connections: ConnectionsRepository,
   ) {
     this.queue = createQueue<ConversionJobData>(QUEUE_NAMES.conversion, env.REDIS_URL);
+    this.validationQueue = createQueue<ValidationJobData>(QUEUE_NAMES.validation, env.REDIS_URL);
   }
 
   async onModuleDestroy(): Promise<void> {
     await this.queue.close();
+    await this.validationQueue.close();
   }
 
   async start(projectId: string, input: StartConversionInput) {
@@ -84,12 +90,16 @@ export class ConversionService implements OnModuleDestroy {
         409,
       );
     }
-    const strategy: MigrationStrategy = input.strategy ?? "FAST";
+    const tracks = parseRunTracks({ tracks: input.tracks ?? ["SCHEMA"] });
+    const strategy: MigrationStrategy = tracks.includes("PLSQL")
+      ? (input.strategy ?? "FAST")
+      : "FAST";
     const run = await this.runs.create({
       projectId,
       status: "QUEUED",
       strategy,
       mappingRulesVersion: MAPPING_RULES_VERSION,
+      stats: { tracks },
     });
     try {
       await this.queue.add(
@@ -110,9 +120,79 @@ export class ConversionService implements OnModuleDestroy {
       action: "conversion.started",
       entityType: "migration_run",
       entityId: run.id,
-      metadata: { strategy, mappingRulesVersion: MAPPING_RULES_VERSION },
+      metadata: { strategy, tracks, mappingRulesVersion: MAPPING_RULES_VERSION },
     });
     return toMigrationRunDto(run);
+  }
+
+  async stop(projectId: string, runId: string) {
+    await this.projects.getByIdOrThrow(projectId);
+    const run = await this.runs.getById(runId);
+    if (!run || run.projectId !== projectId) {
+      throw new NotFoundError("Migration run not found");
+    }
+    if (run.status !== "QUEUED" && run.status !== "RUNNING") {
+      throw new ConflictError("That run is not in progress");
+    }
+    await this.dropIdleJob(this.queue, `conversion-${run.id}`);
+    await this.dropIdleJob(this.validationQueue, `validation-${run.id}`);
+    const conversionIdle = await this.jobIsIdle(this.queue, `conversion-${run.id}`);
+    const validationIdle = await this.jobIsIdle(this.validationQueue, `validation-${run.id}`);
+    const finishNow = conversionIdle && validationIdle;
+    try {
+      const updated = await this.runs.update(run.id, {
+        status: finishNow ? "CANCELLED" : run.status,
+        errorMessage: "Stopped by user",
+        stats: { ...(run.stats ?? {}), tracks: parseRunTracks(run.stats), cancelRequested: true },
+        ...(finishNow ? { finishedAt: new Date() } : {}),
+      });
+      await this.audit.append({
+        projectId,
+        action: "conversion.stopped",
+        entityType: "migration_run",
+        entityId: run.id,
+        metadata: { previousStatus: run.status, finishedNow: finishNow },
+      });
+      return toMigrationRunDto(updated);
+    } catch (error) {
+      const message = formatDatabaseError(error);
+      if (/invalid input value for enum/i.test(message)) {
+        throw new AppError(
+          "MIGRATION_REQUIRED",
+          "Metadata database is missing run status CANCELLED. Restart the API so it can apply migrations (or run bun run db:migrate), then stop the run again.",
+          503,
+        );
+      }
+      throw new AppError("STOP_FAILED", message, 500);
+    }
+  }
+
+  private idleJobStates = new Set(["waiting", "delayed", "prioritized", "wait", "paused", "completed", "failed"]);
+
+  private async dropIdleJob(
+    queue: { getJob: (id: string) => Promise<{ getState: () => Promise<string>; remove: () => Promise<unknown> } | undefined> },
+    jobId: string,
+  ): Promise<void> {
+    const job = await queue.getJob(jobId);
+    if (!job) {
+      return;
+    }
+    const state = await job.getState();
+    if (state === "waiting" || state === "delayed" || state === "prioritized" || state === "wait" || state === "paused") {
+      await job.remove();
+    }
+  }
+
+  private async jobIsIdle(
+    queue: { getJob: (id: string) => Promise<{ getState: () => Promise<string> } | undefined> },
+    jobId: string,
+  ): Promise<boolean> {
+    const job = await queue.getJob(jobId);
+    if (!job) {
+      return true;
+    }
+    const state = await job.getState();
+    return this.idleJobStates.has(state);
   }
 
   async list(projectId: string) {

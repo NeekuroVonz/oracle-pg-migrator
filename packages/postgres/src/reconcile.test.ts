@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { canonicalizeShape, diffPgShapes, type PgTableShape } from "@migrator/shared";
 import { parseDesiredSql } from "./parse-desired";
 import { emitReconcileSql } from "./plan";
-import { remapShapeLocation } from "./reconcile";
+import { remapShapeLocation, sandboxSqlForAction } from "./reconcile";
 
 const tableSql = `CREATE SCHEMA IF NOT EXISTS wms1;
 CREATE TABLE wms1.mail (
@@ -26,6 +26,27 @@ describe("parseDesiredSql", () => {
     const canonical = canonicalizeShape(shape) as PgTableShape;
     expect(canonical.columns.map((column) => column.name)).toEqual(["body", "pk"]);
     expect(canonical.constraints[0]?.kind).toBe("PRIMARY KEY");
+  });
+
+  test("parses CREATE TABLE followed by SET NOT NULL and ADD CONSTRAINT", () => {
+    const shape = parseDesiredSql({
+      objectType: "TABLE",
+      sql: `CREATE SCHEMA IF NOT EXISTS wms1;
+CREATE TABLE wms1.tac_abbudget (
+  pk bigint,
+  note varchar(40)
+);
+ALTER TABLE wms1.tac_abbudget ALTER COLUMN pk SET NOT NULL;
+ALTER TABLE wms1.tac_abbudget ADD CONSTRAINT tac_abbudget_pk PRIMARY KEY (pk);`,
+      schema: "wms1",
+      name: "tac_abbudget",
+    });
+    expect(shape?.kind).toBe("table");
+    if (shape?.kind !== "table") {
+      return;
+    }
+    expect(shape.columns.find((column) => column.name === "pk")?.nullable).toBe(false);
+    expect(shape.constraints.map((constraint) => constraint.kind)).toContain("PRIMARY KEY");
   });
 
   test("parses an unschemaed unique index", () => {
@@ -125,5 +146,31 @@ describe("remapShapeLocation", () => {
     const remapped = remapShapeLocation(actual, "wms1", "mail");
     expect(remapped.schema).toBe("wms1");
     expect(remapped.name).toBe("mail");
+  });
+});
+
+describe("sandboxSqlForAction", () => {
+  const desiredSql = "CREATE TABLE wms1.mail (pk bigint NOT NULL);";
+
+  test("still applies desired SQL in scratch when TARGET already matches", () => {
+    expect(
+      sandboxSqlForAction({
+        action: "SKIP_UNCHANGED",
+        desiredSql,
+        reconcileSql: null,
+        cloneSql: null,
+      }),
+    ).toBe(desiredSql);
+  });
+
+  test("still applies desired SQL in scratch when reconcile needs review", () => {
+    expect(
+      sandboxSqlForAction({
+        action: "REVIEW_REQUIRED",
+        desiredSql,
+        reconcileSql: null,
+        cloneSql: null,
+      }),
+    ).toBe(desiredSql);
   });
 });

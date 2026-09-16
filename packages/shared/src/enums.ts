@@ -82,7 +82,7 @@ export type DataMode = (typeof DATA_MODES)[number];
 export const DATA_COPY_CHUNK_SIZE_DEFAULT = 1000;
 export const DATA_COPY_CHUNK_SIZE_MAX = 5000;
 
-export const DATA_COPY_RUN_STATUSES = ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED"] as const;
+export const DATA_COPY_RUN_STATUSES = ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"] as const;
 export type DataCopyRunStatus = (typeof DATA_COPY_RUN_STATUSES)[number];
 
 export const DATA_COPY_TABLE_STATUSES = ["PENDING", "RUNNING", "SUCCEEDED", "FAILED"] as const;
@@ -119,8 +119,76 @@ export function isDeterministicSchemaType(type: string): boolean {
   return (DETERMINISTIC_SCHEMA_TYPES as readonly string[]).includes(type.toUpperCase());
 }
 
-export const MIGRATION_RUN_STATUSES = ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED"] as const;
+export const MIGRATION_RUN_STATUSES = ["QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"] as const;
 export type MigrationRunStatus = (typeof MIGRATION_RUN_STATUSES)[number];
+
+export const CONVERSION_TRACKS = ["SCHEMA", "VIEWS", "PLSQL"] as const;
+export type ConversionTrack = (typeof CONVERSION_TRACKS)[number];
+
+export const CONVERSION_TRACK_LABELS: Record<ConversionTrack, string> = {
+  SCHEMA: "Tables, indexes, sequences",
+  VIEWS: "Views",
+  PLSQL: "PL/SQL",
+};
+
+export const CONVERSION_TRACK_BADGES: Record<ConversionTrack, string> = {
+  SCHEMA: "SCHEMA",
+  VIEWS: "VIEWS",
+  PLSQL: "PL/SQL",
+};
+
+export const CONVERSION_TRACK_HINTS: Record<ConversionTrack, string> = {
+  SCHEMA: "ora2pg / rules only — no AI",
+  VIEWS: "ora2pg / rules — no AI",
+  PLSQL: "procedures, functions, packages, triggers, types — uses AI",
+};
+
+export const CONVERSION_TRACK_TYPES: Record<ConversionTrack, readonly OracleObjectType[]> = {
+  SCHEMA: ["TABLE", "SEQUENCE", "CONSTRAINT", "INDEX"],
+  VIEWS: ["VIEW", "MATERIALIZED_VIEW"],
+  PLSQL: [
+    "FUNCTION",
+    "PROCEDURE",
+    "TRIGGER",
+    "PACKAGE",
+    "PACKAGE_BODY",
+    "TYPE",
+    "TYPE_BODY",
+  ],
+};
+
+export function typesForTracks(tracks: readonly ConversionTrack[]): Set<string> {
+  const types = new Set<string>();
+  for (const track of tracks) {
+    for (const type of CONVERSION_TRACK_TYPES[track]) {
+      types.add(type);
+    }
+  }
+  return types;
+}
+
+export function isPlsqlObjectType(type: string): boolean {
+  return (CONVERSION_TRACK_TYPES.PLSQL as readonly string[]).includes(type.toUpperCase());
+}
+
+export function parseRunTracks(stats: Record<string, unknown> | null | undefined): ConversionTrack[] {
+  const raw = stats?.tracks;
+  if (!Array.isArray(raw)) {
+    return ["SCHEMA", "VIEWS"];
+  }
+  const selected = CONVERSION_TRACKS.filter((track) => raw.includes(track));
+  return selected.length > 0 ? [...selected] : ["SCHEMA"];
+}
+
+export function runCancelRequested(stats: Record<string, unknown> | null | undefined): boolean {
+  return stats?.cancelRequested === true;
+}
+
+export function isConversionStopped(
+  run: { status?: string | null; stats?: Record<string, unknown> | null } | null | undefined,
+): boolean {
+  return run?.status === "CANCELLED" || runCancelRequested(run?.stats);
+}
 
 export const CONVERSION_ATTEMPT_STATUSES = ["SUCCEEDED", "FAILED", "REVIEW_REQUIRED"] as const;
 export type ConversionAttemptStatus = (typeof CONVERSION_ATTEMPT_STATUSES)[number];
@@ -194,7 +262,7 @@ export type ValidatorMode = (typeof VALIDATOR_MODES)[number];
 export const VALIDATOR_SLOT_STATUSES = ["idle", "busy", "unhealthy"] as const;
 export type ValidatorSlotStatus = (typeof VALIDATOR_SLOT_STATUSES)[number];
 
-export const MAPPING_RULES_VERSION = "ora2pg-compat-v2";
+export const MAPPING_RULES_VERSION = "ora2pg-compat-v3";
 
 export const REPORT_GATE_STATUSES = ["IN_PROGRESS", "BLOCKED", "READY_FOR_DEPLOYMENT"] as const;
 export type ReportGateStatus = (typeof REPORT_GATE_STATUSES)[number];

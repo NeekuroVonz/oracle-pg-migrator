@@ -35,14 +35,12 @@ function tableExecutor(tables: Array<{ schema: string; name: string; oid: string
 }
 
 describe("inspectTargetObject", () => {
-  test("finds a table in public when the preferred schema misses", async () => {
+  test("does not treat a public leftover as the WMS1 table", async () => {
     const shape = await inspectTargetObject(tableExecutor([{ schema: "public", name: "mail", oid: "11" }]), {
       objectType: "TABLE",
       schema: "wms1",
       name: "mail",
     });
-    expect(shape?.kind).toBe("table");
-    expect(shape && "schema" in shape ? shape.schema : null).toBe("public");
-    expect(shape && "name" in shape ? shape.name : null).toBe("mail");
+    expect(shape).toBeNull();
   });
 });

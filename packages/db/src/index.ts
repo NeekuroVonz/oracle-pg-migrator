@@ -40,6 +40,7 @@ export {
   uniqueObjectDependencyEdges,
 } from "./object-dependencies-repository";
 export { formatDatabaseError, isUniqueViolation } from "./pg-errors";
+export { migrateMetadata } from "./migrate";
 export { ProjectsRepository } from "./projects-repository";
 export * from "./schema";
 export { TestAttemptsRepository } from "./test-attempts-repository";

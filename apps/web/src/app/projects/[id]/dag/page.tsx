@@ -1,32 +1,29 @@
 "use client";
 
-import {
-  MIGRATION_STRATEGY_LABELS,
-  type MigrationStrategy,
-  type ObjectDagDto,
-} from "@migrator/shared";
+import { type ConversionTrack, type ObjectDagDto } from "@migrator/shared";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { ConversionTrackPicker } from "@/components/conversion-tracks";
+import { Card } from "@/components/ui/card";
 import { DagView } from "@/components/dag-view";
-import { Select } from "@/components/ui/select";
 import { api } from "@/lib/api";
 
 export default function ProjectDagPage() {
   const params = useParams<{ id: string }>();
   const [dag, setDag] = useState<ObjectDagDto | null>(null);
-  const [strategy, setStrategy] = useState<MigrationStrategy>("FAST");
+  const [tracks, setTracks] = useState<ConversionTrack[]>(["SCHEMA", "VIEWS"]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api
-      .getProjectDag(params.id, strategy)
+      .getProjectDag(params.id, { tracks })
       .then(setDag)
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : "Could not load dependency graph");
         setDag(null);
       });
-  }, [params.id, strategy]);
+  }, [params.id, tracks]);
 
   return (
     <div className="mx-auto max-w-5xl px-8 py-8">
@@ -35,24 +32,16 @@ export default function ProjectDagPage() {
           Project
         </Link>
       </p>
-      <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Dependency graph</h1>
-          <p className="mt-1 text-sm text-muted">
-            Convert and compile in-scope objects after their Oracle prerequisites. Cycles need
-            review. Out-of-scope or deferred prerequisites block dependents.
-          </p>
-        </div>
-        <Select
-          value={strategy}
-          onChange={(event) => setStrategy(event.target.value as MigrationStrategy)}
-          aria-label="Strategy for deferred types"
-        >
-          <option value="FAST">{MIGRATION_STRATEGY_LABELS.FAST}</option>
-          <option value="BALANCED">{MIGRATION_STRATEGY_LABELS.BALANCED}</option>
-          <option value="MAXIMUM_ACCURACY">{MIGRATION_STRATEGY_LABELS.MAXIMUM_ACCURACY}</option>
-        </Select>
+      <div className="mt-2">
+        <h1 className="text-2xl font-semibold">Dependency graph</h1>
+        <p className="mt-1 text-sm text-muted">
+          Preview which objects a conversion run would take. Types you leave unchecked are
+          deferred. Convert and compile in-scope objects after their Oracle prerequisites.
+        </p>
       </div>
+      <Card className="mt-4">
+        <ConversionTrackPicker tracks={tracks} onChange={setTracks} />
+      </Card>
       {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
       <div className="mt-6">
         {dag ? (

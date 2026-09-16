@@ -3,6 +3,7 @@ import {
   AI_PROVIDER_KINDS,
   COMPILE_STATUSES,
   CONVERSION_ATTEMPT_STATUSES,
+  CONVERSION_TRACKS,
   CONVERTER_TYPES,
   DAG_BLOCKED_REASONS,
   DATA_COPY_CHUNK_SIZE_MAX,
@@ -446,6 +447,23 @@ export type ObjectDagNodeDto = z.infer<typeof objectDagNodeDtoSchema>;
 
 export const objectDagQuerySchema = z.object({
   strategy: z.enum(MIGRATION_STRATEGIES).optional(),
+  tracks: z
+    .string()
+    .optional()
+    .transform((raw) => {
+      if (raw == null) {
+        return undefined;
+      }
+      if (raw.length === 0) {
+        return [] as Array<(typeof CONVERSION_TRACKS)[number]>;
+      }
+      return CONVERSION_TRACKS.filter((track) =>
+        raw
+          .split(",")
+          .map((part) => part.trim())
+          .includes(track),
+      );
+    }),
 });
 
 export type ObjectDagQuery = z.infer<typeof objectDagQuerySchema>;
@@ -482,6 +500,17 @@ export const upsertScopeSchema = z
   .strict();
 
 export type UpsertScopeInput = z.infer<typeof upsertScopeSchema>;
+
+export const includeScopeObjectsSchema = z
+  .object({
+    objects: z
+      .array(z.string().trim().min(3).max(SCOPE_NAME_PATTERN_LENGTH_MAX))
+      .min(1)
+      .max(100),
+  })
+  .strict();
+
+export type IncludeScopeObjectsInput = z.infer<typeof includeScopeObjectsSchema>;
 
 export const scopePreviewQuerySchema = paginationQuerySchema.extend({
   objectType: z.enum(ORACLE_OBJECT_TYPES).optional(),
@@ -548,6 +577,7 @@ export type ScopePreviewDto = z.infer<typeof scopePreviewDtoSchema>;
 export const startConversionSchema = z
   .object({
     strategy: z.enum(MIGRATION_STRATEGIES).default("FAST"),
+    tracks: z.array(z.enum(CONVERSION_TRACKS)).min(1).default(["SCHEMA"]),
   })
   .strict();
 
@@ -586,6 +616,7 @@ export const reportBlockingItemDtoSchema = z.object({
   objectType: z.string(),
   status: z.enum(OBJECT_STATUSES),
   detail: z.string(),
+  missingTable: z.string().nullable().optional().default(null),
 });
 
 export const readinessBreakdownDtoSchema = z.object({
@@ -914,6 +945,7 @@ export const dataCopyRunDtoSchema = z.object({
   failedCount: z.number(),
   matchedCount: z.number(),
   errorMessage: z.string().nullable(),
+  cancelRequested: z.boolean().optional().default(false),
   startedAt: z.string().nullable(),
   finishedAt: z.string().nullable(),
   createdAt: z.string(),

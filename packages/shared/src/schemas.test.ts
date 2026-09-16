@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createOracleConnectionSchema,
   listDiscoveredObjectsQuerySchema,
+  objectDagQuerySchema,
   startConversionSchema,
   startDeploySchema,
   upsertScopeSchema,
@@ -53,13 +54,27 @@ describe("upsertScopeSchema", () => {
   });
 });
 
+describe("objectDagQuerySchema", () => {
+  test("parses comma-separated tracks", () => {
+    const parsed = objectDagQuerySchema.parse({ tracks: "SCHEMA,PLSQL" });
+    expect(parsed.tracks).toEqual(["SCHEMA", "PLSQL"]);
+    expect(objectDagQuerySchema.parse({ tracks: "" }).tracks).toEqual([]);
+  });
+});
+
 describe("startConversionSchema", () => {
   test("defaults to FAST and rejects unknown fields", () => {
     const ok = startConversionSchema.safeParse({});
     expect(ok.success).toBe(true);
     if (ok.success) {
       expect(ok.data.strategy).toBe("FAST");
+      expect(ok.data.tracks).toEqual(["SCHEMA"]);
     }
+    const withTracks = startConversionSchema.safeParse({
+      strategy: "FAST",
+      tracks: ["SCHEMA", "PLSQL"],
+    });
+    expect(withTracks.success).toBe(true);
     const bad = startConversionSchema.safeParse({ strategy: "FAST", allowWrite: true });
     expect(bad.success).toBe(false);
   });

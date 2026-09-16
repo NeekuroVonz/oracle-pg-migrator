@@ -62,13 +62,24 @@ export interface SqlExecutor {
 
 export interface CompileSqlOptions {
   ignoreDuplicateObjects?: boolean;
+  searchPath?: string;
+}
+
+function quoteSearchPathIdent(value: string): string {
+  if (/^[a-z_][a-z0-9_]*$/.test(value)) {
+    return value;
+  }
+  return `"${value.replace(/"/g, '""')}"`;
 }
 
 function isDuplicateCodeOrMessage(code?: string | null, message?: string | null): boolean {
-  if (code === "42P07" || code === "42710" || code === "42723") {
+  if (code === "42P07" || code === "42710" || code === "42723" || code === "42P16") {
     return true;
   }
-  return Boolean(message && /already exists/i.test(message));
+  return Boolean(
+    message &&
+      (/already exists/i.test(message) || /multiple primary keys/i.test(message)),
+  );
 }
 
 export function isDuplicateObjectError(input: {
@@ -106,6 +117,11 @@ export async function compileSql(
     };
   }
   await executor.query(`SET statement_timeout = ${Math.max(1000, Math.floor(timeoutMs))}`);
+  if (options.searchPath) {
+    await executor.query(
+      `SET search_path TO ${quoteSearchPathIdent(options.searchPath)}, public`,
+    );
+  }
   for (const statement of statements) {
     try {
       await executor.query(statement);

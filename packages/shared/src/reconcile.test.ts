@@ -56,15 +56,15 @@ describe("diffPgShapes", () => {
     expect(diff.changes.map((change) => change.kind)).toEqual(["add_column"]);
   });
 
-  test("drop column is destructive", () => {
+  test("drop column is ignored for auto-reconcile (keep extra TARGET columns)", () => {
     const actual = table([
       { name: "pk", type: "bigint", nullable: false, default: null },
       { name: "note", type: "text", nullable: true, default: null },
     ]);
     const desired = table([{ name: "pk", type: "bigint", nullable: false, default: null }]);
     const diff = diffPgShapes(desired, actual);
-    expect(diff.destructive).toBe(true);
-    expect(diff.changes.some((change) => change.kind === "drop_column")).toBe(true);
+    expect(diff.destructive).toBe(false);
+    expect(diff.changes.some((change) => change.kind === "drop_column")).toBe(false);
   });
 
   test("shrinking varchar is destructive and widening is not", () => {
@@ -87,13 +87,66 @@ describe("diffPgShapes", () => {
     expect(populatedBlocksAutoUpdate(diffPgShapes(desired, actual))).toBe(false);
   });
 
-  test("dropping a column on a populated table blocks auto-update", () => {
+  test("extra TARGET columns do not block auto-update", () => {
     const actual = table([
       { name: "pk", type: "bigint", nullable: false, default: null },
       { name: "note", type: "text", nullable: true, default: null },
     ]);
     const desired = table([{ name: "pk", type: "bigint", nullable: false, default: null }]);
-    expect(populatedBlocksAutoUpdate(diffPgShapes(desired, actual))).toBe(true);
+    expect(populatedBlocksAutoUpdate(diffPgShapes(desired, actual))).toBe(false);
+  });
+
+  test("keeping wider numeric instead of shrinking to smallint", () => {
+    const actual = table([{ name: "ord", type: "numeric", nullable: true, default: null }]);
+    const desired = table([{ name: "ord", type: "smallint", nullable: true, default: null }]);
+    const diff = diffPgShapes(desired, actual);
+    expect(diff.changes).toEqual([]);
+    expect(diff.destructive).toBe(false);
+  });
+  test("bigint to numeric is a safe widen", () => {
+    const actual = table([{ name: "amount", type: "bigint", nullable: true, default: null }]);
+    const desired = table([{ name: "amount", type: "numeric", nullable: true, default: null }]);
+    const diff = diffPgShapes(desired, actual);
+    expect(diff.destructive).toBe(false);
+    expect(diff.changes).toHaveLength(1);
+    expect(diff.changes[0]?.kind).toBe("alter_column_type");
+  });
+
+  test("varchar and character varying are the same type", () => {
+    const actual = table([
+      { name: "code", type: "character varying(20)", nullable: true, default: null },
+    ]);
+    const desired = table([{ name: "code", type: "varchar(20)", nullable: true, default: null }]);
+    const diff = diffPgShapes(desired, actual);
+    expect(diff.changes).toEqual([]);
+    expect(diff.destructive).toBe(false);
+  });
+
+  test("PRIMARY KEY with same columns but different names is not a change", () => {
+    const actual = table([{ name: "pk", type: "bigint", nullable: false, default: null }], [
+      {
+        name: "mail_pkey",
+        kind: "PRIMARY KEY",
+        columns: ["pk"],
+        definition: "PRIMARY KEY (pk)",
+        referencedSchema: null,
+        referencedTable: null,
+        referencedColumns: [],
+      },
+    ]);
+    const desired = table([{ name: "pk", type: "bigint", nullable: false, default: null }], [
+      {
+        name: "constraint",
+        kind: "PRIMARY KEY",
+        columns: ["pk"],
+        definition: "PRIMARY KEY (pk)",
+        referencedSchema: null,
+        referencedTable: null,
+        referencedColumns: [],
+      },
+    ]);
+    const diff = diffPgShapes(desired, actual);
+    expect(diff.changes.some((item) => item.kind.includes("constraint"))).toBe(false);
   });
 });
 
@@ -130,8 +183,21 @@ describe("classifyThreeWay", () => {
     });
   });
 
-  test("manual target change is drift", () => {
-    const result = classifyThreeWay({
+  test("manual target change is drift only when destructive", () => {
+    const drifted = classifyThreeWay({
+      desiredHash: "desired",
+      targetHash: "new-target",
+      previousDesiredHash: "desired",
+      previousTargetHash: "old-target",
+      kind: "table",
+      destructive: true,
+      populated: false,
+    });
+    expect(drifted).toMatchObject({
+      targetState: "TARGET_DRIFTED",
+      reconcileAction: "REVIEW_REQUIRED",
+    });
+    const safe = classifyThreeWay({
       desiredHash: "desired",
       targetHash: "new-target",
       previousDesiredHash: "desired",
@@ -140,14 +206,24 @@ describe("classifyThreeWay", () => {
       destructive: false,
       populated: false,
     });
-    expect(result).toMatchObject({
-      targetState: "TARGET_DRIFTED",
-      reconcileAction: "REVIEW_REQUIRED",
-    });
+    expect(safe.reconcileAction).toBe("UPDATE_REQUIRED");
   });
 
-  test("both sides changing is conflict", () => {
-    const result = classifyThreeWay({
+  test("both sides changing is conflict only when destructive", () => {
+    const conflict = classifyThreeWay({
+      desiredHash: "new-desired",
+      targetHash: "new-target",
+      previousDesiredHash: "old-desired",
+      previousTargetHash: "old-target",
+      kind: "table",
+      destructive: true,
+      populated: false,
+    });
+    expect(conflict).toMatchObject({
+      targetState: "TARGET_CONFLICT",
+      reconcileAction: "REVIEW_REQUIRED",
+    });
+    const safe = classifyThreeWay({
       desiredHash: "new-desired",
       targetHash: "new-target",
       previousDesiredHash: "old-desired",
@@ -156,10 +232,7 @@ describe("classifyThreeWay", () => {
       destructive: false,
       populated: false,
     });
-    expect(result).toMatchObject({
-      targetState: "TARGET_CONFLICT",
-      reconcileAction: "REVIEW_REQUIRED",
-    });
+    expect(safe.reconcileAction).toBe("UPDATE_REQUIRED");
   });
 
   test("safe table diff is update required", () => {

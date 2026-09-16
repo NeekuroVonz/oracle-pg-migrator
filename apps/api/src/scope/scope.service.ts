@@ -7,9 +7,13 @@ import {
   toScopeDto,
 } from "@migrator/db";
 import {
+  AppError,
   buildScopePreview,
   defaultScopeInput,
+  evaluateScopeObject,
+  forceIncludeObjectsInScope,
   normalizeScopeInput,
+  type IncludeScopeObjectsInput,
   type ScopeDto,
   type ScopePreviewQuery,
   type UpsertScopeInput,
@@ -63,6 +67,91 @@ export class ScopeService {
       },
     });
     return toScopeDto(row);
+  }
+
+  async includeObjects(
+    projectId: string,
+    input: IncludeScopeObjectsInput,
+  ): Promise<{ scope: ScopeDto; included: string[] }> {
+    const { catalog, discoveredSchemas } = await this.catalog(projectId);
+    const saved = await this.scopes.getByProjectId(projectId);
+    const base = saved
+      ? toScopeDto(saved)
+      : this.unsavedScope(projectId, discoveredSchemas);
+    const refs: Array<{ owner: string; name: string }> = [];
+    for (const raw of input.objects) {
+      const parts = raw
+        .trim()
+        .toUpperCase()
+        .split(".")
+        .filter((part) => part.length > 0);
+      if (parts.length !== 2 || !parts[0] || !parts[1]) {
+        throw new AppError(
+          "INVALID_OBJECT_REF",
+          `Expected OWNER.NAME, got "${raw}"`,
+          400,
+        );
+      }
+      const owner = parts[0];
+      const name = parts[1];
+      const found = catalog.some(
+        (object) =>
+          object.owner.toUpperCase() === owner && object.name.toUpperCase() === name,
+      );
+      if (!found) {
+        throw new AppError(
+          "OBJECT_NOT_DISCOVERED",
+          `${owner}.${name} is not in the discovered catalog. Re-run discovery first.`,
+          404,
+        );
+      }
+      refs.push({ owner, name });
+    }
+    const next = forceIncludeObjectsInScope(
+      {
+        includeSchemas: base.includeSchemas,
+        includeObjectTypes: base.includeObjectTypes,
+        includeNamePatterns: base.includeNamePatterns,
+        excludeNamePatterns: base.excludeNamePatterns,
+        excludeObjects: base.excludeObjects,
+        dataMode: base.dataMode,
+        selectedTables: base.selectedTables,
+      },
+      catalog,
+      refs,
+    );
+    const stillExcluded: string[] = [];
+    for (const ref of refs) {
+      const object = catalog.find(
+        (row) =>
+          row.owner.toUpperCase() === ref.owner && row.name.toUpperCase() === ref.name,
+      );
+      if (!object) {
+        stillExcluded.push(`${ref.owner}.${ref.name}`);
+        continue;
+      }
+      const decision = evaluateScopeObject(object, next);
+      if (!decision.included) {
+        stillExcluded.push(`${ref.owner}.${ref.name} (${decision.reason ?? "excluded"})`);
+      }
+    }
+    if (stillExcluded.length > 0) {
+      throw new AppError(
+        "SCOPE_INCLUDE_FAILED",
+        `Could not bring into scope: ${stillExcluded.join(", ")}. Check Scope include/exclude rules.`,
+        409,
+      );
+    }
+    const scope = await this.upsert(projectId, next);
+    const included = refs.map((ref) => `${ref.owner}.${ref.name}`);
+    await this.audit.append({
+      projectId,
+      action: "scope.include_objects",
+      entityType: "migration_scope",
+      entityId: scope.id,
+      metadata: { included },
+    });
+    return { scope, included };
   }
 
   async preview(projectId: string, input: UpsertScopeInput, query: ScopePreviewQuery) {

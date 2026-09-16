@@ -6,7 +6,10 @@ export class MigrationRunsRepository {
   constructor(private readonly db: MetadataDatabase) {}
 
   async create(
-    input: Pick<NewMigrationRunRow, "projectId" | "status" | "strategy" | "mappingRulesVersion">,
+    input: Pick<
+      NewMigrationRunRow,
+      "projectId" | "status" | "strategy" | "mappingRulesVersion" | "stats"
+    >,
   ): Promise<MigrationRunRow> {
     const [row] = await this.db.insert(migrationRuns).values(input).returning();
     if (!row) {

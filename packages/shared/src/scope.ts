@@ -90,6 +90,112 @@ export function evaluateScopeObject(
   return decision;
 }
 
+/** Which OWNER.NAME refs are currently selected by scope rules (as TABLE by default). */
+export function refsIncludedInScope(
+  rules: UpsertScopeInput,
+  refs: Array<{ owner: string; name: string } | string>,
+  objectType: OracleObjectType = "TABLE",
+): string[] {
+  const included: string[] = [];
+  for (const raw of refs) {
+    const owner =
+      typeof raw === "string" ? raw.split(".")[0]?.trim() : raw.owner.trim();
+    const name =
+      typeof raw === "string" ? raw.split(".")[1]?.trim() : raw.name.trim();
+    if (!owner || !name) {
+      continue;
+    }
+    const decision = evaluateScopeObject(
+      {
+        id: `${owner}.${name}`,
+        owner,
+        name,
+        objectType,
+      },
+      rules,
+    );
+    if (decision.included) {
+      included.push(`${owner.toUpperCase()}.${name.toUpperCase()}`);
+    }
+  }
+  return included;
+}
+
+/**
+ * Force-include OWNER.NAME refs that are currently excluded by patterns/exact lists
+ * or missing from an include-name allow-list.
+ * Matching exclude globs are removed; other catalog objects that matched those globs
+ * become exact excludeObjects so the rest of the scope stays the same.
+ * When includeNamePatterns is non-empty (allow-list mode), each forced ref is appended
+ * as an exact OWNER.NAME pattern so evaluateScope actually selects it.
+ */
+export function forceIncludeObjectsInScope(
+  rules: UpsertScopeInput,
+  catalog: ScopeCatalogObject[],
+  refs: Array<{ owner: string; name: string }>,
+): UpsertScopeInput {
+  const normalized = normalizeScopeInput(rules);
+  if (refs.length === 0) {
+    return normalized;
+  }
+  const force = new Set(
+    refs.map((ref) => `${ref.owner.trim().toUpperCase()}.${ref.name.trim().toUpperCase()}`),
+  );
+  const excludeObjects = normalized.excludeObjects.filter((raw) => {
+    const upper = raw.trim().toUpperCase();
+    for (const qualified of force) {
+      if (upper === qualified || upper.startsWith(`${qualified}.`)) {
+        return false;
+      }
+    }
+    return true;
+  });
+  const nextExact = new Set(excludeObjects.map((value) => value.toUpperCase()));
+  const removedPatterns: string[] = [];
+  for (const pattern of normalized.excludeNamePatterns) {
+    const hitsForce = [...force].some((qualified) => {
+      const [owner, name] = qualified.split(".");
+      return Boolean(owner && name && objectMatchesPattern({ owner, name }, pattern));
+    });
+    if (!hitsForce) {
+      continue;
+    }
+    removedPatterns.push(pattern);
+    for (const object of catalog) {
+      const qualified = `${object.owner.toUpperCase()}.${object.name.toUpperCase()}`;
+      if (force.has(qualified)) {
+        continue;
+      }
+      if (objectMatchesPattern(object, pattern)) {
+        nextExact.add(qualified);
+      }
+    }
+  }
+  const excludeNamePatterns = normalized.excludeNamePatterns.filter(
+    (pattern) => !removedPatterns.includes(pattern),
+  );
+  const includeSchemas = uniqueUpper([
+    ...normalized.includeSchemas,
+    ...refs.map((ref) => ref.owner),
+  ]);
+  const includeObjectTypes = [
+    ...new Set([...normalized.includeObjectTypes, "TABLE" as OracleObjectType]),
+  ];
+  // Allow-list mode: removing excludes is not enough — forced names must match include patterns.
+  const includeNamePatterns =
+    normalized.includeNamePatterns.length > 0
+      ? uniqueTrim([...normalized.includeNamePatterns, ...force])
+      : normalized.includeNamePatterns;
+  return normalizeScopeInput({
+    ...normalized,
+    includeSchemas,
+    includeObjectTypes,
+    includeNamePatterns,
+    excludeNamePatterns,
+    excludeObjects: [...nextExact],
+  });
+}
+
 export function evaluateScopeCatalog(
   objects: ScopeCatalogObject[],
   rules: UpsertScopeInput,

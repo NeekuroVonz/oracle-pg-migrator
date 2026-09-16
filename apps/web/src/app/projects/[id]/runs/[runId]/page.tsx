@@ -2,17 +2,22 @@
 
 import {
   type ConversionRunDetailDto,
+  parseRunTracks,
   RECONCILE_ACTION_LABELS,
   type ReconcileAction,
+  runCancelRequested,
   TARGET_STATE_LABELS,
   type TargetState,
 } from "@migrator/shared";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { TrackBadges } from "@/components/conversion-tracks";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
 import { Pagination } from "@/components/pagination";
+import { RunNav } from "@/components/run-nav";
 import { Select } from "@/components/ui/select";
 import { StrategyBadge } from "@/components/strategy-badge";
 import { api } from "@/lib/api";
@@ -35,6 +40,8 @@ export default function RunDetailPage() {
   const [reconcileAction, setReconcileAction] = useState("");
   const [page, setPage] = useState(1);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
 
   const load = useCallback(async () => {
     const data = await api.getRun(params.id, params.runId, {
@@ -71,25 +78,58 @@ export default function RunDetailPage() {
     return <p className="px-8 py-8 text-sm text-muted">Loading…</p>;
   }
 
+  const run = detail.run;
+  const stopRequested = runCancelRequested(run.stats);
+  const active = run.status === "QUEUED" || run.status === "RUNNING";
+
+  async function stop(): Promise<void> {
+    setStopping(true);
+    setActionError(null);
+    try {
+      await api.stopRun(params.id, params.runId);
+      await load();
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : "Could not stop conversion");
+    } finally {
+      setStopping(false);
+    }
+  }
+
   return (
     <div className="mx-auto max-w-6xl px-8 py-8">
-      <p className="text-sm text-muted">
-        <Link href={`/projects/${params.id}/runs`} className="hover:underline">
-          Runs
-        </Link>
-      </p>
-      <div className="mt-2 flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-semibold">Run {detail.run.id.slice(0, 8)}</h1>
-        <StrategyBadge strategy={detail.run.strategy} />
-        <Badge>{detail.run.status}</Badge>
+      <RunNav />
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <h1 className="text-2xl font-semibold">Run {run.id.slice(0, 8)}</h1>
+        <TrackBadges stats={run.stats} />
+        {parseRunTracks(run.stats).includes("PLSQL") ? (
+          <StrategyBadge strategy={run.strategy} />
+        ) : null}
+        <Badge>{stopRequested && run.status === "RUNNING" ? "STOPPING" : run.status}</Badge>
+        {active ? (
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={() => void stop()}
+            disabled={stopping || stopRequested}
+          >
+            {stopping || stopRequested ? "Stopping…" : "Stop"}
+          </Button>
+        ) : null}
       </div>
+      {actionError ? <p className="mt-2 text-sm text-danger">{actionError}</p> : null}
       <p className="mt-2 text-sm text-muted">
         Mapping {detail.run.mappingRulesVersion} · compiled {detail.run.compiledCount}/
         {detail.run.objectCount} · tested {detail.run.testedCount} · waiting{" "}
         {detail.run.waitingDependencyCount}
       </p>
       {detail.run.errorMessage ? (
-        <p className="mt-2 text-sm text-danger">{detail.run.errorMessage}</p>
+        <p
+          className={`mt-2 text-sm ${
+            detail.run.status === "CANCELLED" || stopRequested ? "text-muted" : "text-danger"
+          }`}
+        >
+          {detail.run.errorMessage}
+        </p>
       ) : null}
       {(detail.run.failedCount > 0 ||
         detail.run.compileFailedCount > 0 ||
@@ -131,32 +171,6 @@ export default function RunDetailPage() {
           )}
         </Card>
       )}
-      <p className="mt-3 text-sm">
-        <Link href={`/projects/${params.id}/runs/${params.runId}/dag`} className="hover:underline">
-          Dependency graph
-        </Link>
-        {" · "}
-        <Link
-          href={`/projects/${params.id}/runs/${params.runId}/report`}
-          className="hover:underline"
-        >
-          Migration report
-        </Link>
-        {" · "}
-        <Link
-          href={`/projects/${params.id}/runs/${params.runId}/data-copy`}
-          className="hover:underline"
-        >
-          Data copy
-        </Link>
-        {" · "}
-        <Link
-          href={`/projects/${params.id}/runs/${params.runId}/deploy`}
-          className="hover:underline"
-        >
-          Deploy
-        </Link>
-      </p>
       <div className="mt-4 flex max-w-3xl flex-wrap gap-3">
         <Select
           value={status}

@@ -5,6 +5,7 @@ import {
   dataCopyReadiness,
   formatValidatedSqlBundle,
   gateStatusForReport,
+  missingRelationFromError,
   scoreReadiness,
 } from "./report";
 
@@ -96,13 +97,13 @@ describe("gateStatusForReport", () => {
     ).toBe("BLOCKED");
     expect(
       gateStatusForReport({
-        runStatus: "SUCCEEDED",
+        runStatus: "CANCELLED",
         blockingCount: 0,
         pendingCount: 0,
         validatedCount: 2,
         inScopeCount: 2,
       }),
-    ).toBe("READY_FOR_DEPLOYMENT");
+    ).toBe("BLOCKED");
   });
 });
 
@@ -149,6 +150,71 @@ describe("buildMigrationReport", () => {
     expect(report.blocking[0]?.name).toBe("EMP_V");
     expect(report.readiness.compilePercent).toBe(100);
     expect(report.readiness.overallPercent).toBeLessThan(100);
+  });
+
+  test("exposes missingTable for out-of-scope constraint references", () => {
+    const report = buildMigrationReport({
+      projectId: "22222222-2222-2222-2222-222222222222",
+      runId: "33333333-3333-3333-3333-333333333333",
+      strategy: "FAST",
+      mappingRulesVersion: "ora2pg-compat-v1",
+      runStatus: "SUCCEEDED",
+      objects: [
+        {
+          ...table,
+          id: "55555555-5555-5555-5555-555555555555",
+          owner: "WMS1",
+          name: "TCO_ABCODE",
+          objectType: "CONSTRAINT",
+          status: "REVIEW_REQUIRED",
+          compileStatus: "SKIPPED",
+          testStatus: null,
+          compileError:
+            'relation "wms1.tco_abcode_no_use" does not exist (referenced table not in SCHEMA scope)',
+          tableName: "TCO_ABCODE_NO_USE",
+        },
+      ],
+      graph: {
+        nodeCount: 1,
+        edgeCount: 0,
+        layerCount: 1,
+        cycleCount: 0,
+        waitingCount: 0,
+      },
+      testsPassed: 0,
+      testsFailed: 0,
+      testsSkipped: 0,
+      compileFirstAttempt: 0,
+      compileAfterRepair: 0,
+      aiConvertCount: 0,
+      aiFixCount: 0,
+      aiVerifyCount: 0,
+      generatedAt: "2026-09-10T10:00:00.000Z",
+    });
+    expect(report.blocking[0]?.missingTable).toBe("WMS1.TCO_ABCODE_NO_USE");
+  });
+});
+
+describe("missingRelationFromError", () => {
+  test("parses schema-qualified relation errors", () => {
+    expect(
+      missingRelationFromError('relation "wms1.tlg_daily_tmp_1" does not exist'),
+    ).toEqual({ owner: "WMS1", name: "TLG_DAILY_TMP_1" });
+  });
+
+  test("parses bare relation names with default owner", () => {
+    expect(missingRelationFromError('relation "tes_user" does not exist', "WMS1")).toEqual({
+      owner: "WMS1",
+      name: "TES_USER",
+    });
+  });
+
+  test("returns null for bare relation without owner", () => {
+    expect(missingRelationFromError('relation "tes_user" does not exist')).toBeNull();
+  });
+
+  test("returns null when message has no relation", () => {
+    expect(missingRelationFromError("duplicate key value")).toBeNull();
   });
 });
 

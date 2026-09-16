@@ -48,6 +48,31 @@ async function allRows<T extends Record<string, unknown>>(
 
 const SYSTEM_NAMESPACES = ["pg_catalog", "information_schema", "pg_toast"];
 
+/** pg may return text[] as JS array or as "{a,b}" depending on driver/settings. */
+function normalizePgTextArray(value: unknown): string[] {
+  if (value == null) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item));
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed === "{}" || trimmed === "") {
+      return [];
+    }
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      return trimmed
+        .slice(1, -1)
+        .split(",")
+        .map((part) => part.trim().replace(/^"|"$/g, ""))
+        .filter(Boolean);
+    }
+    return [trimmed];
+  }
+  return [];
+}
+
 function kindForObjectType(objectType: string): PgShapeKind | null {
   switch (objectType.toUpperCase()) {
     case "TABLE":
@@ -106,9 +131,7 @@ async function resolveClassNamespace(
        WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = ANY($3::text[])`,
       [preferred, name, relkinds],
     );
-    if (exact) {
-      return exact.nspname;
-    }
+    return exact?.nspname ?? null;
   }
   const fallback = await firstRow<{ nspname: string }>(
     executor,
@@ -148,6 +171,7 @@ async function resolveProcNamespace(
     if (exact) {
       return exact.nspname;
     }
+    return null;
   }
   const fallback = await firstRow<{ nspname: string }>(
     executor,
@@ -185,6 +209,7 @@ async function resolveTriggerNamespace(
     if (exact) {
       return exact.nspname;
     }
+    return null;
   }
   const fallback = await firstRow<{ nspname: string }>(
     executor,
@@ -222,6 +247,7 @@ async function resolveConstraintNamespace(
     if (exact) {
       return exact.nspname;
     }
+    return null;
   }
   const fallback = await firstRow<{ nspname: string }>(
     executor,
@@ -339,11 +365,11 @@ async function inspectTable(
     constraints: constraints.map((constraint) => ({
       name: constraint.conname,
       kind: kindMap[constraint.contype as keyof typeof kindMap] ?? "CHECK",
-      columns: constraint.cols ?? [],
+      columns: normalizePgTextArray(constraint.cols),
       definition: constraint.def,
       referencedSchema: constraint.fschema,
       referencedTable: constraint.ftable,
-      referencedColumns: constraint.fcols ?? [],
+      referencedColumns: normalizePgTextArray(constraint.fcols),
     })),
   };
 }

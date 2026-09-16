@@ -8,7 +8,6 @@ const ORA2PG_TYPES: Record<string, string> = {
   TABLE: "TABLE",
   SEQUENCE: "SEQUENCE",
   INDEX: "INDEX",
-  CONSTRAINT: "TABLE",
   VIEW: "VIEW",
 };
 

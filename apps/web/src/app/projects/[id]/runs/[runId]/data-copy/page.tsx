@@ -4,10 +4,12 @@ import type { DataCopyRunDto } from "@migrator/shared";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
+import { MigrationGuide, MigrationStepCallout } from "@/components/migration-guide";
+import { Pagination } from "@/components/pagination";
+import { RunNav } from "@/components/run-nav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
-import { Pagination } from "@/components/pagination";
 import { api } from "@/lib/api";
 import { DEFAULT_PAGE_SIZE, pageCount, paginate } from "@/lib/pagination";
 
@@ -47,6 +49,7 @@ export default function DataCopyPage() {
     try {
       const data = await api.startRunDataCopy(params.id, params.runId);
       setCopy(data);
+      setPage(1);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Could not start data copy");
     } finally {
@@ -54,30 +57,49 @@ export default function DataCopyPage() {
     }
   }
 
+  async function resumeFailed(): Promise<void> {
+    setPending(true);
+    setError(null);
+    try {
+      const data = await api.resumeFailedDataCopy(params.id, params.runId);
+      setCopy(data);
+      setPage(1);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not resume failed tables");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function pause(): Promise<void> {
+    setPending(true);
+    setError(null);
+    try {
+      const data = await api.pauseDataCopy(params.id, params.runId);
+      setCopy(data);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not pause data copy");
+    } finally {
+      setPending(false);
+    }
+  }
+
   const active = status === "QUEUED" || status === "RUNNING";
+  const pauseRequested = Boolean(copy?.cancelRequested);
+  const failedFromTables = copy?.tables.filter((t) => t.status === "FAILED").length ?? 0;
+  const pendingFromTables = copy?.tables.filter((t) => t.status === "PENDING").length ?? 0;
+  const failedCount = Math.max(copy?.failedCount ?? 0, failedFromTables);
+  const pendingCount = pendingFromTables;
+  const canResume =
+    Boolean(copy) &&
+    !active &&
+    (status === "FAILED" || status === "CANCELLED" || status === "SUCCEEDED") &&
+    (failedCount > 0 || pendingCount > 0);
 
   return (
     <div className="mx-auto max-w-6xl px-8 py-8">
-      <p className="text-sm text-muted">
-        <Link href={`/projects/${params.id}/runs/${params.runId}`} className="hover:underline">
-          Run
-        </Link>
-        {" · "}
-        <Link
-          href={`/projects/${params.id}/runs/${params.runId}/report`}
-          className="hover:underline"
-        >
-          Report
-        </Link>
-        {" · "}
-        <Link
-          href={`/projects/${params.id}/runs/${params.runId}/deploy`}
-          className="hover:underline"
-        >
-          Deploy
-        </Link>
-      </p>
-      <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+      <RunNav />
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Data copy</h1>
           <p className="mt-1 text-sm text-muted">
@@ -85,10 +107,55 @@ export default function DataCopyPage() {
             read-only. Deploy VALIDATED SQL first so target tables exist.
           </p>
         </div>
-        <Button onClick={() => void start()} disabled={pending || active}>
-          {pending ? "Starting…" : copy ? "Start new copy" : "Start data copy"}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          {active ? (
+            <Button variant="danger" onClick={() => void pause()} disabled={pending || pauseRequested}>
+              {pauseRequested ? "Pausing…" : pending ? "…" : "Pause"}
+            </Button>
+          ) : null}
+          {canResume ? (
+            <Button
+              variant="secondary"
+              onClick={() => void resumeFailed()}
+              disabled={pending || active}
+            >
+              {pending ? "Resuming…" : `Resume failed (${failedCount + pendingCount})`}
+            </Button>
+          ) : null}
+          <Button onClick={() => void start()} disabled={pending || active}>
+            {pending ? "Starting…" : copy ? "Start new copy" : "Start data copy"}
+          </Button>
+        </div>
       </div>
+      {copy ? (
+        <p className="mt-2 text-xs text-muted">
+          <strong className="text-foreground">Pause</strong> stops after the current chunk/table —
+          then use <strong className="text-foreground">Resume failed</strong> for FAILED/PENDING
+          only (keeps SUCCEEDED).{" "}
+          <strong className="text-foreground">Start new copy</strong> truncates and recopies every
+          selected table.
+        </p>
+      ) : null}
+      <MigrationStepCallout title="Step 6 of 6 — requires Deploy first" tone="warn">
+        <p>
+          Data copy only inserts rows. If you see{" "}
+          <code className="text-foreground">schema &quot;…&quot; does not exist</code>, go to{" "}
+          <Link
+            href={`/projects/${params.id}/runs/${params.runId}/deploy`}
+            className="font-medium text-accent hover:underline"
+          >
+            Deploy
+          </Link>{" "}
+          and apply VALIDATED SQL to TARGET, then start data copy again.
+        </p>
+      </MigrationStepCallout>
+      <MigrationGuide
+        projectId={params.id}
+        runId={params.runId}
+        highlight="data-copy"
+        compact
+        className="mt-4"
+      />
       {error ? <p className="mt-4 text-sm text-danger">{error}</p> : null}
       {!copy ? (
         <Card className="mt-6">
@@ -102,8 +169,10 @@ export default function DataCopyPage() {
           <div className="mt-6 flex items-center gap-3">
             <Badge>{copy.status}</Badge>
             <p className="text-sm text-muted">
-              Mode {copy.dataMode} · chunk {copy.chunkSize} · copied {copy.copiedCount}/
-              {copy.tableCount} · failed {copy.failedCount} · row counts matched {copy.matchedCount}
+              Mode {copy.dataMode} · chunk {copy.chunkSize} · copied{" "}
+              {copy.tables.filter((t) => t.status === "SUCCEEDED").length}/{copy.tableCount} ·
+              failed {failedFromTables}
+              {pauseRequested ? " · pause requested" : ""} · row counts matched {copy.matchedCount}
             </p>
           </div>
           {copy.errorMessage ? (

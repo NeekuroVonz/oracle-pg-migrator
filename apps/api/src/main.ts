@@ -1,5 +1,6 @@
 import "reflect-metadata";
 import { loadEnv } from "@migrator/config";
+import { migrateMetadata } from "@migrator/db";
 import { Logger } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import type { NestExpressApplication } from "@nestjs/platform-express";
@@ -11,6 +12,8 @@ const JSON_BODY_LIMIT = "10mb";
 
 async function bootstrap(): Promise<void> {
   const env = loadEnv();
+  await migrateMetadata(env.DATABASE_URL);
+  Logger.log("metadata migrations applied", "Bootstrap");
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     logger: ["error", "warn", "log"],
   });

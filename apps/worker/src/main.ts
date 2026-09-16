@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import { createServer } from "node:http";
 import { loadEnv } from "@migrator/config";
+import { migrateMetadata } from "@migrator/db";
 import { Logger } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { HealthQueueWorker } from "./health.worker";
@@ -8,6 +9,8 @@ import { WorkerModule } from "./worker.module";
 
 async function bootstrap(): Promise<void> {
   const env = loadEnv();
+  await migrateMetadata(env.DATABASE_URL);
+  Logger.log("metadata migrations applied", "Bootstrap");
   const app = await NestFactory.createApplicationContext(WorkerModule, {
     logger: ["error", "warn", "log"],
   });

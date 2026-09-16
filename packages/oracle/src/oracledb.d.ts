@@ -1,6 +1,7 @@
 declare module "oracledb" {
   export const OUT_FORMAT_ARRAY: number;
   export const CLOB: number;
+  export const BLOB: number;
 
   export interface Metadata {
     name: string;
@@ -32,7 +33,9 @@ declare module "oracledb" {
   const oracledb: {
     OUT_FORMAT_ARRAY: number;
     CLOB: number;
+    BLOB: number;
     fetchAsString: number[];
+    fetchAsBuffer: number[];
     getConnection(attrs: ConnectionAttributes): Promise<Connection>;
   };
 

@@ -1,10 +1,10 @@
 "use client";
 
 import type { ObjectDagDto } from "@migrator/shared";
-import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { DagView } from "@/components/dag-view";
+import { RunNav } from "@/components/run-nav";
 import { api } from "@/lib/api";
 
 export default function RunDagPage() {
@@ -23,12 +23,8 @@ export default function RunDagPage() {
 
   return (
     <div className="mx-auto max-w-5xl px-8 py-8">
-      <p className="text-sm text-muted">
-        <Link href={`/projects/${params.id}/runs/${params.runId}`} className="hover:underline">
-          Run
-        </Link>
-      </p>
-      <h1 className="mt-2 text-2xl font-semibold">Run dependency graph</h1>
+      <RunNav />
+      <h1 className="mt-4 text-2xl font-semibold">Run dependency graph</h1>
       <p className="mt-1 text-sm text-muted">
         Order used for this conversion and compile. Waiting objects were not compiled.
       </p>

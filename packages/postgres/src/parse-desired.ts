@@ -94,18 +94,24 @@ function qualified(raw: string): { schema: string | null; name: string } {
 }
 
 function parseColumn(fragment: string): PgColumnShape | null {
-  const match =
-    /^(?:"([^"]+)"|([a-zA-Z_][\w$]*))\s+((?:[a-zA-Z][\w\s]*)(?:\([^)]*\))?(?:\s+with(?:\s+local)?\s+time\s+zone)?)(.*)$/i.exec(
-      fragment.trim(),
-    );
+  const match = /^(?:"([^"]+)"|([a-zA-Z_][\w$]*))\s+(.+)$/i.exec(fragment.trim());
   if (!match) {
     return null;
   }
   const name = canonicalizeIdent(match[1] ?? match[2] ?? "");
-  const type = (match[3] ?? "text").trim();
-  const rest = (match[4] ?? "").toUpperCase();
-  const nullable = !/\bNOT\s+NULL\b/.test(rest);
-  const defaultMatch = /\bDEFAULT\s+(.+?)(?:\s+NOT\s+NULL|\s*$)/i.exec(match[4] ?? "");
+  let rest = (match[3] ?? "").trim();
+  // Do not let NOT NULL / DEFAULT get swallowed into the type token.
+  const typeMatch =
+    /^(double\s+precision|character\s+varying|character|timestamp(?:\s+with(?:out)?\s+time\s+zone)?|time(?:\s+with(?:out)?\s+time\s+zone)?|[a-zA-Z_][\w]*)(?:\s*\(\s*[^)]+\s*\))?/i.exec(
+      rest,
+    );
+  if (!typeMatch?.[0]) {
+    return null;
+  }
+  const type = typeMatch[0].trim();
+  rest = rest.slice(typeMatch[0].length);
+  const nullable = !/\bNOT\s+NULL\b/i.test(rest);
+  const defaultMatch = /\bDEFAULT\s+(.+?)(?:\s+NOT\s+NULL|\s*$)/i.exec(rest);
   return {
     name,
     type,
@@ -159,13 +165,70 @@ function parseConstraint(fragment: string): PgConstraintShape | null {
   };
 }
 
+function pickPrimaryStatement(objectType: string, statements: string[]): string {
+  const find = (pattern: RegExp) => statements.find((statement) => pattern.test(statement));
+  switch (objectType) {
+    case "TABLE":
+      return find(/^CREATE\s+(?:UNLOGGED\s+)?(?:TEMPORARY\s+|TEMP\s+)?TABLE\b/i) ?? statements.join(";\n");
+    case "INDEX":
+      return find(/^CREATE\s+(UNIQUE\s+)?INDEX\b/i) ?? statements.join(";\n");
+    case "SEQUENCE":
+      return find(/^CREATE\s+SEQUENCE\b/i) ?? statements.join(";\n");
+    case "VIEW":
+      return (
+        find(/^CREATE\s+(OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?VIEW\b/i) ?? statements.join(";\n")
+      );
+    case "MATERIALIZED_VIEW":
+      return find(/^CREATE\s+MATERIALIZED\s+VIEW\b/i) ?? statements.join(";\n");
+    case "CONSTRAINT":
+      return find(/^ALTER\s+TABLE\b[\s\S]*\bADD\s+CONSTRAINT\b/i) ?? statements.join(";\n");
+    case "FUNCTION":
+      return find(/^CREATE\s+(OR\s+REPLACE\s+)?FUNCTION\b/i) ?? statements.join(";\n");
+    case "PROCEDURE":
+      return find(/^CREATE\s+(OR\s+REPLACE\s+)?PROCEDURE\b/i) ?? statements.join(";\n");
+    case "TRIGGER":
+      return find(/^CREATE\s+(OR\s+REPLACE\s+)?(?:CONSTRAINT\s+)?TRIGGER\b/i) ?? statements.join(";\n");
+    default:
+      return statements.join(";\n");
+  }
+}
+
+function applyTableFollowOns(
+  shape: Extract<PgObjectShape, { kind: "table" }>,
+  statements: string[],
+): void {
+  for (const statement of statements) {
+    const notNull =
+      /ALTER\s+TABLE\b[\s\S]*?\bALTER\s+COLUMN\s+(?:"([^"]+)"|([a-zA-Z_][\w$]*))\s+SET\s+NOT\s+NULL/i.exec(
+        statement,
+      );
+    if (notNull) {
+      const columnName = canonicalizeIdent(notNull[1] ?? notNull[2] ?? "");
+      const column = shape.columns.find((item) => item.name === columnName);
+      if (column) {
+        column.nullable = false;
+      }
+      continue;
+    }
+    const added = parseConstraintObject(statement, shape.schema, shape.name);
+    if (added?.kind === "constraint") {
+      const exists = shape.constraints.some(
+        (item) => canonicalizeIdent(item.name) === canonicalizeIdent(added.constraint.name),
+      );
+      if (!exists) {
+        shape.constraints.push(added.constraint);
+      }
+    }
+  }
+}
+
 function parseTable(
   sql: string,
   fallbackSchema: string,
   fallbackName: string,
 ): PgObjectShape | null {
   const match =
-    /CREATE\s+(?:TEMPORARY\s+|TEMP\s+)?TABLE\s+((?:"[^"]+"|[a-zA-Z_][\w$]*)(?:\s*\.\s*(?:"[^"]+"|[a-zA-Z_][\w$]*))?)\s*\(([\s\S]*)\)\s*$/i.exec(
+    /CREATE\s+(?:UNLOGGED\s+)?(?:TEMPORARY\s+|TEMP\s+)?TABLE\s+((?:"[^"]+"|[a-zA-Z_][\w$]*)(?:\s*\.\s*(?:"[^"]+"|[a-zA-Z_][\w$]*))?)\s*\(([\s\S]*)\)\s*$/i.exec(
       sql,
     );
   if (!match) {
@@ -361,26 +424,31 @@ export function parseDesiredSql(input: {
   const statements = splitStatements(input.sql).filter(
     (statement) => !/^CREATE\s+SCHEMA\b/i.test(statement),
   );
-  const body = statements.join(";\n");
+  const primary = pickPrimaryStatement(type, statements);
   switch (type) {
-    case "TABLE":
-      return parseTable(body, schema, name);
+    case "TABLE": {
+      const shape = parseTable(primary, schema, name);
+      if (shape?.kind === "table") {
+        applyTableFollowOns(shape, statements);
+      }
+      return shape;
+    }
     case "INDEX":
-      return parseIndex(body, schema, name);
+      return parseIndex(primary, schema, name);
     case "SEQUENCE":
-      return parseSequence(body, schema, name);
+      return parseSequence(primary, schema, name);
     case "VIEW":
-      return parseView(body, schema, name, false);
+      return parseView(primary, schema, name, false);
     case "MATERIALIZED_VIEW":
-      return parseView(body, schema, name, true);
+      return parseView(primary, schema, name, true);
     case "CONSTRAINT":
-      return parseConstraintObject(body, schema, name) ?? parseTable(body, schema, name);
+      return parseConstraintObject(primary, schema, name) ?? parseTable(primary, schema, name);
     case "FUNCTION":
-      return parseRoutine(body, schema, name, false);
+      return parseRoutine(primary, schema, name, false);
     case "PROCEDURE":
-      return parseRoutine(body, schema, name, true);
+      return parseRoutine(primary, schema, name, true);
     case "TRIGGER":
-      return parseTrigger(body, schema, name);
+      return parseTrigger(primary, schema, name);
     default:
       return null;
   }

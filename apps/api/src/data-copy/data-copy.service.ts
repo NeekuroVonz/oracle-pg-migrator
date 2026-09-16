@@ -122,6 +122,8 @@ export class DataCopyService implements OnModuleDestroy {
       chunkSize,
       tableCount: tables.length,
     });
+    // Ensure pause flag is clear on a brand-new run (column default is false).
+    await this.copyRuns.update(copyRun.id, { cancelRequested: false });
     const rows = await this.copyTables.replace(
       copyRun.id,
       tables.map((row) => ({
@@ -155,6 +157,99 @@ export class DataCopyService implements OnModuleDestroy {
       metadata: { conversionRunId, tableCount: tables.length, chunkSize, dataMode: scope.dataMode },
     });
     return toDataCopyRunDto(copyRun, rows);
+  }
+
+  /**
+   * Re-queue the latest copy run for FAILED (+ leftover PENDING) tables only.
+   * SUCCEEDED tables are left alone; mid-table failures keep lastOffset (no full truncate).
+   */
+  async resumeFailed(projectId: string, conversionRunId: string): Promise<DataCopyRunDto> {
+    await this.projects.getByIdOrThrow(projectId);
+    const run = await this.runs.getById(conversionRunId);
+    if (!run || run.projectId !== projectId) {
+      throw new NotFoundError("Migration run not found");
+    }
+    const active = await this.copyRuns.findActiveByConversionRun(conversionRunId);
+    if (active) {
+      throw new ConflictError("A data copy is already in progress for this run");
+    }
+    const copyRun = await this.copyRuns.getLatestForConversionRun(conversionRunId);
+    if (!copyRun) {
+      throw new AppError("NO_COPY_RUN", "Start a data copy before resuming failed tables", 409);
+    }
+    const retryable = await this.copyTables.resetRetryable(copyRun.id);
+    if (retryable.length === 0) {
+      throw new AppError("NO_FAILED_TABLES", "No failed or pending tables to resume", 409);
+    }
+    const updatedRun = await this.copyRuns.update(copyRun.id, {
+      status: "QUEUED",
+      failedCount: 0,
+      errorMessage: null,
+      cancelRequested: false,
+      finishedAt: null,
+      startedAt: null,
+    });
+    try {
+      await this.queue.add(
+        "data-copy",
+        { projectId, conversionRunId, copyRunId: copyRun.id },
+        {
+          jobId: `data-copy-resume-${copyRun.id}-${Date.now()}`,
+          attempts: 1,
+          removeOnComplete: 50,
+          removeOnFail: 50,
+        },
+      );
+    } catch (error) {
+      await this.copyRuns.update(copyRun.id, {
+        status: "FAILED",
+        errorMessage: error instanceof Error ? error.message : "Failed to enqueue data copy resume",
+        finishedAt: new Date(),
+      });
+      throw error;
+    }
+    await this.audit.append({
+      projectId,
+      action: "data-copy.resume-failed",
+      entityType: "data_copy_run",
+      entityId: copyRun.id,
+      metadata: {
+        conversionRunId,
+        retryTableCount: retryable.length,
+        tables: retryable.map((row) => `${row.owner}.${row.name}`),
+      },
+    });
+    const tables = await this.copyTables.listByCopyRun(copyRun.id);
+    return toDataCopyRunDto(updatedRun, tables);
+  }
+
+  /** Cooperative pause: finish the current table, then stop. Resume failed afterwards. */
+  async pause(projectId: string, conversionRunId: string): Promise<DataCopyRunDto> {
+    await this.projects.getByIdOrThrow(projectId);
+    const run = await this.runs.getById(conversionRunId);
+    if (!run || run.projectId !== projectId) {
+      throw new NotFoundError("Migration run not found");
+    }
+    const copyRun = await this.copyRuns.getLatestForConversionRun(conversionRunId);
+    if (!copyRun) {
+      throw new AppError("NO_COPY_RUN", "No data copy run to pause", 409);
+    }
+    if (copyRun.status !== "QUEUED" && copyRun.status !== "RUNNING") {
+      throw new AppError("NOT_ACTIVE", "Data copy is not running", 409);
+    }
+    const updated = await this.copyRuns.update(copyRun.id, {
+      cancelRequested: true,
+      errorMessage: "Pause requested — finishing current table",
+    });
+    await this.audit.append({
+      projectId,
+      action: "data-copy.pause-requested",
+      entityType: "data_copy_run",
+      entityId: copyRun.id,
+      metadata: { conversionRunId, previousStatus: copyRun.status },
+    });
+    const tables = await this.copyTables.listByCopyRun(copyRun.id);
+    return toDataCopyRunDto(updated, tables);
   }
 
   async getLatest(projectId: string, conversionRunId: string): Promise<DataCopyRunDto | null> {

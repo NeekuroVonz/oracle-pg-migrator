@@ -350,6 +350,10 @@ export default function ConnectionsPage() {
               defaultValue={target?.databaseName ?? "migrator"}
             />
             <Field label="Schema" name="schema" defaultValue={target?.schemaName ?? "public"} />
+            <p className="md:col-span-2 text-xs text-muted">
+              Converted objects go into a PostgreSQL schema named after the Oracle owner (WMS1 →
+              wms1), not this field. Deploy is what creates that schema on the target.
+            </p>
             <Field
               label="Username"
               name="username"

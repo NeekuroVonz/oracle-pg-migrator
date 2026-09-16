@@ -1,4 +1,6 @@
 import {
+  type IncludeScopeObjectsInput,
+  includeScopeObjectsSchema,
   type ScopePreviewQuery,
   scopePreviewQuerySchema,
   type UpsertScopeInput,
@@ -23,6 +25,14 @@ export class ScopeController {
     @Body(new ZodPipe(upsertScopeSchema)) body: UpsertScopeInput,
   ) {
     return this.scope.upsert(projectId, body);
+  }
+
+  @Post("include-objects")
+  includeObjects(
+    @Param("projectId", new ParseUUIDPipe()) projectId: string,
+    @Body(new ZodPipe(includeScopeObjectsSchema)) body: IncludeScopeObjectsInput,
+  ) {
+    return this.scope.includeObjects(projectId, body);
   }
 
   @Post("preview")

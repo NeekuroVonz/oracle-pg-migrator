@@ -1,14 +1,21 @@
 "use client";
 
-import type { MigrationReportDto, ReportGateStatus } from "@migrator/shared";
+import {
+  refsIncludedInScope,
+  type MigrationReportDto,
+  type ReportGateStatus,
+  type UpsertScopeInput,
+} from "@migrator/shared";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { MigrationStepCallout } from "@/components/migration-guide";
+import { Pagination } from "@/components/pagination";
+import { RunNav } from "@/components/run-nav";
+import { StrategyBadge } from "@/components/strategy-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
-import { Pagination } from "@/components/pagination";
-import { StrategyBadge } from "@/components/strategy-badge";
 import { api } from "@/lib/api";
 import { DEFAULT_PAGE_SIZE, pageCount, paginate } from "@/lib/pagination";
 
@@ -57,12 +64,35 @@ function downloadText(filename: string, text: string, mime: string): void {
   URL.revokeObjectURL(url);
 }
 
+function scopeRulesFromDto(scope: {
+  includeSchemas: string[];
+  includeObjectTypes: UpsertScopeInput["includeObjectTypes"];
+  includeNamePatterns: string[];
+  excludeNamePatterns: string[];
+  excludeObjects: string[];
+  dataMode: UpsertScopeInput["dataMode"];
+  selectedTables: string[];
+}): UpsertScopeInput {
+  return {
+    includeSchemas: scope.includeSchemas,
+    includeObjectTypes: scope.includeObjectTypes,
+    includeNamePatterns: scope.includeNamePatterns,
+    excludeNamePatterns: scope.excludeNamePatterns,
+    excludeObjects: scope.excludeObjects,
+    dataMode: scope.dataMode,
+    selectedTables: scope.selectedTables,
+  };
+}
+
 export default function ReportPage() {
   const params = useParams<{ id: string; runId: string }>();
   const [report, setReport] = useState<MigrationReportDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sqlPending, setSqlPending] = useState(false);
   const [blockerPage, setBlockerPage] = useState(1);
+  const [including, setIncluding] = useState<string | null>(null);
+  const [includeMessage, setIncludeMessage] = useState<string | null>(null);
+  const [includedRefs, setIncludedRefs] = useState<Set<string>>(() => new Set());
 
   const load = useCallback(async () => {
     const data = await api.getRunReport(params.id, params.runId);
@@ -86,6 +116,75 @@ export default function ReportPage() {
     }, 2000);
     return () => window.clearInterval(timer);
   }, [gateStatus, load]);
+
+  const missingBlockerTables = useMemo(() => {
+    if (!report) {
+      return [] as string[];
+    }
+    const refs = new Set<string>();
+    for (const item of report.blocking) {
+      if (item.missingTable) {
+        refs.add(item.missingTable.toUpperCase());
+      }
+    }
+    return [...refs];
+  }, [report]);
+
+  const missingBlockerKey = missingBlockerTables.join(",");
+  useEffect(() => {
+    if (missingBlockerTables.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    api
+      .getScope(params.id)
+      .then(({ scope }) => {
+        if (cancelled) {
+          return;
+        }
+        const already = refsIncludedInScope(scopeRulesFromDto(scope), missingBlockerTables);
+        if (already.length === 0) {
+          return;
+        }
+        setIncludedRefs((prev) => {
+          const next = new Set(prev);
+          for (const ref of already) {
+            next.add(ref);
+          }
+          return next;
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [params.id, missingBlockerKey, missingBlockerTables]);
+
+  async function includeMissingTable(missingTable: string): Promise<void> {
+    if (includedRefs.has(missingTable)) {
+      return;
+    }
+    setIncluding(missingTable);
+    setIncludeMessage(null);
+    setError(null);
+    try {
+      const result = await api.includeScopeObjects(params.id, [missingTable]);
+      setIncludedRefs((prev) => {
+        const next = new Set(prev);
+        for (const ref of result.included) {
+          next.add(ref.toUpperCase());
+        }
+        return next;
+      });
+      setIncludeMessage(
+        `Included ${result.included.join(", ")} in scope (now selected for conversion). Start a new Schema run, wait until VALIDATED, then Deploy again.`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not include table in scope");
+    } finally {
+      setIncluding(null);
+    }
+  }
 
   function downloadJson(): void {
     if (!report) {
@@ -126,26 +225,8 @@ export default function ReportPage() {
 
   return (
     <div className="mx-auto max-w-6xl px-8 py-8">
-      <p className="text-sm text-muted">
-        <Link href={`/projects/${params.id}/runs/${params.runId}`} className="hover:underline">
-          Run
-        </Link>
-        {" · "}
-        <Link
-          href={`/projects/${params.id}/runs/${params.runId}/data-copy`}
-          className="hover:underline"
-        >
-          Data copy
-        </Link>
-        {" · "}
-        <Link
-          href={`/projects/${params.id}/runs/${params.runId}/deploy`}
-          className="hover:underline"
-        >
-          Deploy
-        </Link>
-      </p>
-      <div className="mt-2 flex flex-wrap items-center gap-3">
+      <RunNav />
+      <div className="mt-4 flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-semibold">Migration report</h1>
         <StrategyBadge strategy={report.strategy} />
         <Badge className={gateClass(report.gateStatus)}>{report.gateStatus}</Badge>
@@ -158,7 +239,33 @@ export default function ReportPage() {
         Compile success is not VALIDATED and is not READY_FOR_DEPLOYMENT. Data is row-count match
         after copy. Performance stays omitted.
       </p>
+      <MigrationStepCallout title="Next steps">
+        <ol className="list-decimal space-y-1 pl-4">
+          <li>Clear blockers below (Include out-of-scope tables if needed, then re-run Schema).</li>
+          <li>
+            When ready:{" "}
+            <Link
+              href={`/projects/${params.id}/runs/${params.runId}/deploy`}
+              className="font-medium text-accent hover:underline"
+            >
+              Deploy
+            </Link>{" "}
+            VALIDATED SQL to TARGET.
+          </li>
+          <li>
+            Then{" "}
+            <Link
+              href={`/projects/${params.id}/runs/${params.runId}/data-copy`}
+              className="font-medium text-accent hover:underline"
+            >
+              Data copy
+            </Link>{" "}
+            for rows.
+          </li>
+        </ol>
+      </MigrationStepCallout>
       {error ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
+      {includeMessage ? <p className="mt-3 text-sm text-accent">{includeMessage}</p> : null}
       <div className="mt-4 flex flex-wrap gap-2">
         <Button variant="secondary" onClick={downloadJson}>
           Download JSON
@@ -166,6 +273,11 @@ export default function ReportPage() {
         <Button variant="secondary" onClick={() => void downloadSql()} disabled={sqlPending}>
           {sqlPending ? "Preparing SQL…" : "Download SQL"}
         </Button>
+        <Link href={`/projects/${params.id}/scope`} className="inline-flex">
+          <Button variant="secondary" type="button">
+            Open scope
+          </Button>
+        </Link>
       </div>
 
       <div className="mt-6 grid gap-4 md:grid-cols-2">
@@ -245,6 +357,16 @@ export default function ReportPage() {
           <p className="mt-2 text-sm text-muted">No blocking objects.</p>
         ) : (
           <>
+            <p className="mt-2 text-sm text-muted">
+              <strong className="text-foreground">REVIEW_REQUIRED on VIEWs:</strong> often means
+              convert warnings were sticky, or sandbox compile failed (missing table). Open the
+              object for compile error / SQL. Include missing tables if needed, then{" "}
+              <Link href={`/projects/${params.id}/runs`} className="text-accent hover:underline">
+                Start a new Schema + Views run
+              </Link>
+              . After the worker fix, views without HIGH-risk Oracle features can reach VALIDATED
+              when compile + tests pass.
+            </p>
             <table className="mt-3 w-full text-left text-sm">
               <thead className="text-muted">
                 <tr>
@@ -252,6 +374,7 @@ export default function ReportPage() {
                   <th className="py-1 font-medium">Type</th>
                   <th className="py-1 font-medium">Status</th>
                   <th className="py-1 font-medium">Detail</th>
+                  <th className="py-1 font-medium">Action</th>
                 </tr>
               </thead>
               <tbody>
@@ -267,6 +390,34 @@ export default function ReportPage() {
                       <Badge>{item.status}</Badge>
                     </td>
                     <td className="py-2 text-muted">{item.detail}</td>
+                    <td className="py-2">
+                      {item.missingTable ? (
+                        includedRefs.has(item.missingTable) ? (
+                          <Button type="button" size="sm" variant="secondary" disabled>
+                            Included
+                          </Button>
+                        ) : (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            disabled={including !== null}
+                            onClick={() => void includeMissingTable(item.missingTable!)}
+                          >
+                            {including === item.missingTable
+                              ? "Including…"
+                              : `Include ${item.missingTable}`}
+                          </Button>
+                        )
+                      ) : (
+                        <Link
+                          href={objectHref(item.id)}
+                          className="text-sm font-medium text-accent hover:underline"
+                        >
+                          Open →
+                        </Link>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

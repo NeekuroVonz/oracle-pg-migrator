@@ -22,6 +22,7 @@ import {
   createPostgresClient,
   type PostgresTargetConfig,
   truncatePostgresTable,
+  widenIntegerColumnsToNumeric,
 } from "@migrator/postgres";
 import {
   type DataCopyJobData,
@@ -68,6 +69,8 @@ async function copyOneTable(input: {
   oracle: OracleReadOnlyClient;
   postgres: Client;
   tables: DataCopyTablesRepository;
+  copyRuns: DataCopyRunsRepository;
+  copyRunId: string;
 }): Promise<DataCopyTableRow> {
   const columns = oracleColumns(input.object);
   if (columns.length === 0) {
@@ -82,11 +85,27 @@ async function copyOneTable(input: {
   let offset = input.table.lastOffset;
   try {
     await input.tables.update(input.table.id, { status: "RUNNING", errorMessage: null });
+    // Old deploys mapped Oracle NUMBER → bigint; widen before insert so decimals load.
+    await widenIntegerColumnsToNumeric(
+      input.postgres,
+      input.table.targetSchema,
+      input.table.targetName,
+    );
     if (offset === 0) {
       await truncatePostgresTable(input.postgres, input.table.targetSchema, input.table.targetName);
     }
     const oracleRows = await input.oracle.countTableRows(input.table.owner, input.table.name);
     while (offset < oracleRows) {
+      const latestRun = await input.copyRuns.getById(input.copyRunId);
+      if (latestRun?.cancelRequested) {
+        return input.tables.update(input.table.id, {
+          status: "PENDING",
+          copiedRows: copied,
+          lastOffset: offset,
+          oracleRows,
+          errorMessage: "Paused by user",
+        });
+      }
       const rows = await input.oracle.readTableChunk({
         owner: input.table.owner,
         name: input.table.name,
@@ -158,6 +177,22 @@ export async function runDataCopy(input: {
   if (!copyRun || copyRun.projectId !== input.job.projectId) {
     throw new Error("Data copy run not found");
   }
+  // Do not clear cancelRequested when entering RUNNING — Pause may race while QUEUED.
+  if (copyRun.cancelRequested) {
+    const tables = await input.copyTables.listByCopyRun(copyRun.id);
+    const pendingCount = tables.filter(
+      (row) => row.status === "PENDING" || row.status === "RUNNING",
+    ).length;
+    const failedCount = tables.filter((row) => row.status === "FAILED").length;
+    await input.copyRuns.update(copyRun.id, {
+      status: "CANCELLED",
+      cancelRequested: false,
+      failedCount,
+      errorMessage: `Paused by user — ${pendingCount} table(s) left, ${failedCount} failed. Use Resume failed.`,
+      finishedAt: new Date(),
+    });
+    return;
+  }
   const source = await input.connections.getByProjectRole(input.job.projectId, "SOURCE");
   const target = await input.connections.getByProjectRole(input.job.projectId, "TARGET");
   if (source?.engine !== "ORACLE") {
@@ -170,13 +205,40 @@ export async function runDataCopy(input: {
   const postgresPassword = input.cipher.decrypt(target.passwordCiphertext);
   const oracle = oracleClientFromRow(source, oraclePassword, input.env.ORACLE_STATEMENT_TIMEOUT_MS);
   const postgres = createPostgresClient(postgresConfigFromRow(target, postgresPassword));
-  await input.copyRuns.update(copyRun.id, { status: "RUNNING", startedAt: new Date() });
+  await input.copyRuns.update(copyRun.id, {
+    status: "RUNNING",
+    startedAt: new Date(),
+    errorMessage: null,
+  });
   const members = await input.runObjects.listObjects(copyRun.conversionRunId);
   const objects = new Map(members.map((row) => [row.id, row]));
   await postgres.connect();
   try {
+    // Re-check after connect in case Pause landed during setup.
+    const afterConnect = await input.copyRuns.getById(copyRun.id);
+    if (afterConnect?.cancelRequested) {
+      const tables = await input.copyTables.listByCopyRun(copyRun.id);
+      const pendingCount = tables.filter(
+        (row) => row.status === "PENDING" || row.status === "RUNNING",
+      ).length;
+      const failedCount = tables.filter((row) => row.status === "FAILED").length;
+      await input.copyRuns.update(copyRun.id, {
+        status: "CANCELLED",
+        cancelRequested: false,
+        failedCount,
+        errorMessage: `Paused by user — ${pendingCount} table(s) left, ${failedCount} failed. Use Resume failed.`,
+        finishedAt: new Date(),
+      });
+      return;
+    }
     const tables = await input.copyTables.listByCopyRun(copyRun.id);
+    let paused = false;
     for (const table of tables) {
+      const latest = await input.copyRuns.getById(copyRun.id);
+      if (latest?.cancelRequested) {
+        paused = true;
+        break;
+      }
       if (table.status === "SUCCEEDED") {
         continue;
       }
@@ -195,17 +257,52 @@ export async function runDataCopy(input: {
         oracle,
         postgres,
         tables: input.copyTables,
+        copyRuns: input.copyRuns,
+        copyRunId: copyRun.id,
       });
+      const afterTable = await input.copyRuns.getById(copyRun.id);
+      if (afterTable?.cancelRequested) {
+        paused = true;
+        break;
+      }
     }
     const finalTables = await input.copyTables.listByCopyRun(copyRun.id);
     const copiedCount = finalTables.filter((row) => row.status === "SUCCEEDED").length;
     const failedCount = finalTables.filter((row) => row.status === "FAILED").length;
+    const pendingCount = finalTables.filter(
+      (row) => row.status === "PENDING" || row.status === "RUNNING",
+    ).length;
     const matched = dataCopyReadiness(finalTables);
+    if (paused) {
+      await input.copyRuns.update(copyRun.id, {
+        status: "CANCELLED",
+        copiedCount,
+        failedCount,
+        matchedCount: matched.passed,
+        cancelRequested: false,
+        errorMessage: `Paused by user — ${pendingCount} table(s) left, ${failedCount} failed. Use Resume failed.`,
+        finishedAt: new Date(),
+      });
+      await input.audit.append({
+        projectId: input.job.projectId,
+        action: "data-copy.paused",
+        entityType: "data_copy_run",
+        entityId: copyRun.id,
+        metadata: {
+          conversionRunId: copyRun.conversionRunId,
+          copiedCount,
+          failedCount,
+          pendingCount,
+        },
+      });
+      return;
+    }
     await input.copyRuns.update(copyRun.id, {
       status: failedCount > 0 ? "FAILED" : "SUCCEEDED",
       copiedCount,
       failedCount,
       matchedCount: matched.passed,
+      cancelRequested: false,
       errorMessage: failedCount > 0 ? `${failedCount} table(s) failed to copy` : null,
       finishedAt: new Date(),
     });

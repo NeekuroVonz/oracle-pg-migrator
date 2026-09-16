@@ -11,6 +11,18 @@ describe("isDuplicateObjectError", () => {
       }),
     ).toBe(true);
     expect(isDuplicateObjectError({ errorMessage: "syntax error at or near NOT" })).toBe(false);
+    expect(
+      isDuplicateObjectError({
+        errorCode: "42710",
+        errorMessage: `constraint "tac_abbudget_pk" already exists`,
+      }),
+    ).toBe(true);
+    expect(
+      isDuplicateObjectError({
+        errorCode: "42P16",
+        errorMessage: "multiple primary keys for table tac_abbudget are not allowed",
+      }),
+    ).toBe(true);
   });
 });
 

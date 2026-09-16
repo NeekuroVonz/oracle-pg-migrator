@@ -44,6 +44,14 @@ export class ConversionController {
     return this.conversion.start(projectId, body);
   }
 
+  @Post(":runId/stop")
+  stop(
+    @Param("projectId", new ParseUUIDPipe()) projectId: string,
+    @Param("runId", new ParseUUIDPipe()) runId: string,
+  ) {
+    return this.conversion.stop(projectId, runId);
+  }
+
   @Get(":runId/report/sql")
   getReportSql(
     @Param("projectId", new ParseUUIDPipe()) projectId: string,
@@ -59,6 +67,22 @@ export class ConversionController {
     @Body(new ZodPipe(startDataCopySchema)) body: StartDataCopyInput,
   ) {
     return this.dataCopy.start(projectId, runId, body);
+  }
+
+  @Post(":runId/data-copy/resume-failed")
+  resumeFailedDataCopy(
+    @Param("projectId", new ParseUUIDPipe()) projectId: string,
+    @Param("runId", new ParseUUIDPipe()) runId: string,
+  ) {
+    return this.dataCopy.resumeFailed(projectId, runId);
+  }
+
+  @Post(":runId/data-copy/pause")
+  pauseDataCopy(
+    @Param("projectId", new ParseUUIDPipe()) projectId: string,
+    @Param("runId", new ParseUUIDPipe()) runId: string,
+  ) {
+    return this.dataCopy.pause(projectId, runId);
   }
 
   @Get(":runId/data-copy")

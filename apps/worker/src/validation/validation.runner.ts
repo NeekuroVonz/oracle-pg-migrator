@@ -19,13 +19,17 @@ import {
 } from "@migrator/db";
 import { buildObjectDag, orderByDag } from "@migrator/dependency-graph";
 import { createValidatorPool, type ValidatorPool } from "@migrator/docker-manager";
-import { inspectTargetObject, reconcileObject, sandboxSqlForAction } from "@migrator/postgres";
+import { toPrimaryKeyUsingIndexSql } from "@migrator/ora2pg";
+import { reconcileObject, sandboxSqlForAction } from "@migrator/postgres";
 import { createQueue, QUEUE_NAMES } from "@migrator/queue";
 import {
   type DiscoveredObjectMetadata,
+  isConversionStopped,
   isDeterministicSchemaType,
+  isPlsqlObjectType,
   type MigrationStrategy,
   type ObjectStatus,
+  parseRunTracks,
   type ReportingJobData,
 } from "@migrator/shared";
 import {
@@ -76,11 +80,39 @@ function isFatalAiProviderError(message: string | null | undefined): boolean {
   );
 }
 
+/** PK already applied via TABLE DDL (or a prior constraint) — not a real defect. */
+function isBenignPrimaryKeyDuplicate(compiled: {
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  diagnostics?: Array<{ code?: string | null; message?: string | null }>;
+}): boolean {
+  const messages = [
+    compiled.errorMessage,
+    ...(compiled.diagnostics ?? []).map((item) => item.message),
+  ];
+  const codes = [compiled.errorCode, ...(compiled.diagnostics ?? []).map((item) => item.code)];
+  if (codes.some((code) => code === "42P16" || code === "42710")) {
+    return true;
+  }
+  return messages.some(
+    (message) =>
+      Boolean(message) &&
+      (/multiple primary keys/i.test(message!) ||
+        /constraint .+ already exists/i.test(message!)),
+  );
+}
+
 function stickyReview(object: {
   objectType: string;
   riskLevel: string | null;
   status: string;
 }): boolean {
+  // Views: only HIGH-risk Oracle constructs stay sticky. Convert warnings alone must not
+  // block VALIDATED after sandbox compile + tests pass.
+  const type = String(object.objectType).toUpperCase();
+  if (type === "VIEW" || type === "MATERIALIZED_VIEW") {
+    return object.riskLevel === "HIGH";
+  }
   if (isDeterministicSchemaType(object.objectType)) {
     return false;
   }
@@ -119,43 +151,6 @@ async function persistCompile(input: {
       ? {}
       : { testStatus: null, testError: null }),
   });
-}
-
-const SKIPPED_COMPILE: CompileResult = {
-  ok: true,
-  statements: 0,
-  durationMs: 0,
-  errorCode: null,
-  errorMessage: null,
-  diagnostics: [],
-};
-
-async function persistSkipped(input: {
-  runId: string;
-  object: RunObject;
-  sql: string;
-  objects: DiscoveredObjectsRepository;
-  validations: ValidationAttemptsRepository;
-}): Promise<void> {
-  await persistCompile({
-    runId: input.runId,
-    object: input.object,
-    sql: input.sql,
-    compiled: SKIPPED_COMPILE,
-    status: "VALIDATED",
-    objects: input.objects,
-    validations: input.validations,
-  });
-  await input.objects.updateConversion(input.object.id, {
-    status: "VALIDATED",
-    compileStatus: "SKIPPED",
-    compileError: null,
-    testStatus: "SKIPPED",
-    testError: null,
-  });
-  input.object.status = "VALIDATED";
-  input.object.compileStatus = "SKIPPED";
-  input.object.testStatus = "SKIPPED";
 }
 
 async function persistTest(input: {
@@ -200,6 +195,15 @@ export async function runValidation(input: {
   connections: ConnectionsRepository;
   ai: AiRuntime;
 }): Promise<void> {
+  const existing = await input.runs.getById(input.runId);
+  if (isConversionStopped(existing)) {
+    await input.runs.update(input.runId, {
+      status: "CANCELLED",
+      errorMessage: "Stopped by user",
+      finishedAt: new Date(),
+    });
+    return;
+  }
   const pool = poolFromEnv(input.env);
   const slot = await pool.acquire();
   const client = new Client({
@@ -223,7 +227,21 @@ export async function runValidation(input: {
     });
     try {
       const run = await input.runs.getById(input.runId);
+      if (isConversionStopped(run)) {
+        await input.runs.update(input.runId, {
+          status: "CANCELLED",
+          errorMessage: "Stopped by user",
+          finishedAt: new Date(),
+        });
+        return;
+      }
       const strategy = (run?.strategy ?? "FAST") as MigrationStrategy;
+      const tracks = parseRunTracks(run?.stats);
+      const useAiFix = tracks.includes("PLSQL") && Boolean(input.ai.fix);
+      const useAiVerify =
+        tracks.includes("PLSQL") &&
+        Boolean(input.ai.verify) &&
+        (strategy === "BALANCED" || strategy === "MAXIMUM_ACCURACY");
       const members = await input.runObjects.listObjects(input.runId);
       const edges = await input.dependencies.listByProject(input.projectId);
       const dag = buildObjectDag({
@@ -252,6 +270,25 @@ export async function runValidation(input: {
       for (let pass = 0; pass < 2 && pending.length > 0; pass += 1) {
         const remaining: typeof pending = [];
         for (const object of pending) {
+          const latestRun = await input.runs.getById(input.runId);
+          if (isConversionStopped(latestRun)) {
+            await input.runs.update(input.runId, {
+              status: "CANCELLED",
+              errorMessage: "Stopped by user",
+              compiledCount,
+              compileFailedCount,
+              testedCount,
+              testFailedCount,
+              stats: {
+                ...(latestRun?.stats ?? {}),
+                tracks,
+                cancelRequested: true,
+              },
+              finishedAt: new Date(),
+            });
+            await enqueueReport(input.env.REDIS_URL, input.projectId, input.runId);
+            return;
+          }
           const sql = object.targetSql;
           if (!sql) {
             continue;
@@ -286,41 +323,13 @@ export async function runValidation(input: {
           object.desiredShapeHash = recon.desiredHash;
           object.targetShapeHash = recon.targetHash;
 
-          if (
-            recon.reconcileAction === "SKIP_UNCHANGED" ||
-            recon.targetState === "TARGET_MATCHED"
-          ) {
-            compiledCount += 1;
-            await persistSkipped({
-              runId: input.runId,
-              object,
-              sql,
-              objects: input.objects,
-              validations: input.validations,
-            });
-            continue;
-          }
-
-          if (
-            recon.reconcileAction === "REVIEW_REQUIRED" ||
-            recon.targetState === "TARGET_DRIFTED" ||
-            recon.targetState === "TARGET_CONFLICT"
-          ) {
-            await input.objects.updateConversion(object.id, {
-              status: "REVIEW_REQUIRED",
-              compileStatus: null,
-              compileError: recon.reason,
-            });
-            object.status = "REVIEW_REQUIRED";
-            continue;
-          }
-
-          const sandboxSql = sandboxSqlForAction({
-            action: recon.reconcileAction,
-            desiredSql: sql,
-            reconcileSql: recon.reconcileSql,
-            cloneSql: recon.cloneSql,
-          });
+          let sandboxSql =
+            sandboxSqlForAction({
+              action: recon.reconcileAction,
+              desiredSql: sql,
+              reconcileSql: recon.reconcileSql,
+              cloneSql: recon.cloneSql,
+            }) ?? sql;
           if (!sandboxSql) {
             await input.objects.updateConversion(object.id, {
               status: "REVIEW_REQUIRED",
@@ -334,94 +343,18 @@ export async function runValidation(input: {
             sandboxSql,
             input.env.VALIDATOR_STATEMENT_TIMEOUT_MS,
             {
-              ignoreDuplicateObjects: recon.reconcileAction !== "CREATE_REQUIRED",
+              ignoreDuplicateObjects:
+                recon.reconcileAction !== "CREATE_REQUIRED" ||
+                object.objectType === "INDEX",
+              searchPath: object.targetSchema ?? undefined,
             },
           );
-          if (!compiled.ok && isDuplicateObjectError(compiled)) {
-            const live =
-              recon.actual ??
-              (await inspectTargetObject(target, {
-                objectType: object.objectType,
-                schema: object.targetSchema ?? "",
-                name: object.targetName ?? "",
-              }));
-            if (live) {
-              const again = await reconcileObject({
-                executor: target,
-                objectType: object.objectType,
-                schema: object.targetSchema ?? "",
-                name: object.targetName ?? "",
-                desiredSql: sql,
-                previousDesiredHash: object.desiredShapeHash,
-                previousTargetHash: object.targetShapeHash,
-                estimatedRowCount: object.estimatedRowCount,
-              });
-              await input.objects.updateConversion(object.id, {
-                targetState: again.targetState,
-                reconcileAction: again.reconcileAction,
-                desiredShapeHash: again.desiredHash,
-                targetShapeHash: again.targetHash,
-                reconcileSql: again.reconcileSql,
-                reconcileDiff: {
-                  reason: again.reason,
-                  destructive: again.diff.destructive,
-                  changes: again.diff.changes,
-                },
-              });
-              object.reconcileAction = again.reconcileAction;
-              object.targetState = again.targetState;
-              object.reconcileSql = again.reconcileSql;
-              object.desiredShapeHash = again.desiredHash;
-              object.targetShapeHash = again.targetHash;
-              if (
-                again.reconcileAction === "SKIP_UNCHANGED" ||
-                again.targetState === "TARGET_MATCHED" ||
-                again.reconcileAction === "CREATE_REQUIRED"
-              ) {
-                compiledCount += 1;
-                await persistSkipped({
-                  runId: input.runId,
-                  object,
-                  sql,
-                  objects: input.objects,
-                  validations: input.validations,
-                });
-                continue;
-              }
-              if (
-                again.reconcileAction === "REVIEW_REQUIRED" ||
-                again.targetState === "TARGET_DRIFTED" ||
-                again.targetState === "TARGET_CONFLICT"
-              ) {
-                await input.objects.updateConversion(object.id, {
-                  status: "REVIEW_REQUIRED",
-                  compileStatus: null,
-                  compileError: again.reason,
-                });
-                object.status = "REVIEW_REQUIRED";
-                continue;
-              }
-              const retrySql = sandboxSqlForAction({
-                action: again.reconcileAction,
-                desiredSql: sql,
-                reconcileSql: again.reconcileSql,
-                cloneSql: again.cloneSql,
-              });
-              if (!retrySql) {
-                await input.objects.updateConversion(object.id, {
-                  status: "REVIEW_REQUIRED",
-                  compileError: again.reason,
-                });
-                object.status = "REVIEW_REQUIRED";
-                continue;
-              }
-              compiled = await compileSql(
-                client,
-                retrySql,
-                input.env.VALIDATOR_STATEMENT_TIMEOUT_MS,
-                { ignoreDuplicateObjects: true },
-              );
-            } else {
+          if (
+            !compiled.ok &&
+            object.objectType === "CONSTRAINT" &&
+            isDuplicateObjectError(compiled)
+          ) {
+            if (isBenignPrimaryKeyDuplicate(compiled)) {
               compiled = {
                 ...compiled,
                 ok: true,
@@ -429,7 +362,61 @@ export async function runValidation(input: {
                 errorMessage: null,
                 diagnostics: [],
               };
+            } else {
+              const usingIndex = toPrimaryKeyUsingIndexSql(sandboxSql);
+              if (usingIndex) {
+                const retry = await compileSql(
+                  client,
+                  usingIndex,
+                  input.env.VALIDATOR_STATEMENT_TIMEOUT_MS,
+                  {
+                    ignoreDuplicateObjects: false,
+                    searchPath: object.targetSchema ?? undefined,
+                  },
+                );
+                if (retry.ok || isBenignPrimaryKeyDuplicate(retry)) {
+                  compiled = retry.ok
+                    ? retry
+                    : {
+                        ...retry,
+                        ok: true,
+                        errorCode: null,
+                        errorMessage: null,
+                        diagnostics: [],
+                      };
+                  sandboxSql = usingIndex;
+                }
+              }
             }
+          }
+          // INDEX duplicates are safe to ignore; bare CONSTRAINT name collisions are not.
+          if (
+            !compiled.ok &&
+            object.objectType !== "CONSTRAINT" &&
+            isDuplicateObjectError(compiled)
+          ) {
+            compiled = {
+              ...compiled,
+              ok: true,
+              errorCode: null,
+              errorMessage: null,
+              diagnostics: [],
+            };
+          }
+          if (
+            !compiled.ok &&
+            object.objectType === "CONSTRAINT" &&
+            /does not exist/i.test(compiled.errorMessage ?? "")
+          ) {
+            await input.objects.updateConversion(object.id, {
+              status: "REVIEW_REQUIRED",
+              compileStatus: "SKIPPED",
+              compileError: `${compiled.errorMessage} (referenced table not in SCHEMA scope)`,
+            });
+            object.status = "REVIEW_REQUIRED";
+            object.compileStatus = "SKIPPED";
+            object.compileError = `${compiled.errorMessage} (referenced table not in SCHEMA scope)`;
+            continue;
           }
           if (
             !compiled.ok &&
@@ -475,10 +462,11 @@ export async function runValidation(input: {
         pending.splice(0, pending.length, ...remaining);
       }
 
-      if (input.ai.fix) {
+      if (useAiFix && input.ai.fix) {
         const fixer = input.ai.fix;
         const failed = compilable.filter(
           (row) =>
+            isPlsqlObjectType(row.objectType) &&
             row.compileStatus === "FAILED" &&
             row.targetSql &&
             row.reconcileAction === "CREATE_REQUIRED" &&
@@ -487,6 +475,26 @@ export async function runValidation(input: {
         for (const object of failed) {
           if (aiProviderError) {
             break;
+          }
+          const latestRun = await input.runs.getById(input.runId);
+          if (isConversionStopped(latestRun)) {
+            await input.runs.update(input.runId, {
+              status: "CANCELLED",
+              errorMessage: "Stopped by user",
+              compiledCount,
+              compileFailedCount,
+              testedCount,
+              testFailedCount,
+              stats: {
+                ...(latestRun?.stats ?? {}),
+                tracks,
+                aiFixCount,
+                cancelRequested: true,
+              },
+              finishedAt: new Date(),
+            });
+            await enqueueReport(input.env.REDIS_URL, input.projectId, input.runId);
+            return;
           }
           let sql = object.targetSql;
           if (!sql) {
@@ -542,6 +550,7 @@ export async function runValidation(input: {
                 client,
                 sql,
                 input.env.VALIDATOR_STATEMENT_TIMEOUT_MS,
+                { searchPath: object.targetSchema ?? undefined },
               );
               lastCompile = compiled.errorMessage;
               const status = compiled.ok
@@ -610,6 +619,7 @@ export async function runValidation(input: {
           objectType: object.objectType,
           targetSchema: object.targetSchema,
           targetName: object.targetName,
+          targetSql: object.targetSql,
           oracleColumns: metadata.columns,
           statementTimeoutMs: input.env.VALIDATOR_STATEMENT_TIMEOUT_MS,
         });
@@ -640,10 +650,12 @@ export async function runValidation(input: {
       }
 
       const verifier = input.ai.verify;
-      const shouldVerify =
-        Boolean(verifier) && (strategy === "BALANCED" || strategy === "MAXIMUM_ACCURACY");
+      const shouldVerify = useAiVerify && Boolean(verifier);
       if (shouldVerify && verifier) {
         const targets = compilable.filter((row) => {
+          if (!isPlsqlObjectType(row.objectType)) {
+            return false;
+          }
           if (row.compileStatus !== "PASSED" || !row.targetSql) {
             return false;
           }
@@ -656,6 +668,27 @@ export async function runValidation(input: {
           return row.riskLevel === "HIGH" || row.status === "REVIEW_REQUIRED";
         });
         for (const object of targets) {
+          const latestRun = await input.runs.getById(input.runId);
+          if (isConversionStopped(latestRun)) {
+            await input.runs.update(input.runId, {
+              status: "CANCELLED",
+              errorMessage: "Stopped by user",
+              compiledCount,
+              compileFailedCount,
+              testedCount,
+              testFailedCount,
+              stats: {
+                ...(latestRun?.stats ?? {}),
+                tracks,
+                aiFixCount,
+                aiVerifyCount,
+                cancelRequested: true,
+              },
+              finishedAt: new Date(),
+            });
+            await enqueueReport(input.env.REDIS_URL, input.projectId, input.runId);
+            return;
+          }
           try {
             await input.objects.updateConversion(object.id, { status: "VERIFYING" });
             const verified = await verifier.verify({
@@ -726,6 +759,35 @@ export async function runValidation(input: {
         }
       }
 
+      const finishing = await input.runs.getById(input.runId);
+      if (isConversionStopped(finishing)) {
+        await input.runs.update(input.runId, {
+          status: "CANCELLED",
+          errorMessage: "Stopped by user",
+          compiledCount,
+          compileFailedCount,
+          testedCount,
+          testFailedCount,
+          convertedCount,
+          failedCount,
+          reviewRequiredCount,
+          deferredCount,
+          waitingDependencyCount,
+          stats: {
+            ...(finishing?.stats ?? {}),
+            tracks,
+            aiFixCount,
+            aiVerifyCount,
+            ...(aiProviderError ? { aiError: aiProviderError } : {}),
+            issues,
+            cancelRequested: true,
+          },
+          finishedAt: new Date(),
+        });
+        await enqueueReport(input.env.REDIS_URL, input.projectId, input.runId);
+        return;
+      }
+
       await input.runs.update(input.runId, {
         status: "SUCCEEDED",
         compiledCount,
@@ -739,6 +801,7 @@ export async function runValidation(input: {
         waitingDependencyCount,
         stats: {
           ...(run?.stats ?? {}),
+          tracks,
           aiFixCount,
           aiVerifyCount,
           ...(aiProviderError ? { aiError: aiProviderError } : {}),
@@ -770,6 +833,16 @@ export async function runValidation(input: {
       }
     }
   } catch (error) {
+    const latest = await input.runs.getById(input.runId);
+    if (isConversionStopped(latest)) {
+      await input.runs.update(input.runId, {
+        status: "CANCELLED",
+        errorMessage: "Stopped by user",
+        finishedAt: new Date(),
+      });
+      await enqueueReport(input.env.REDIS_URL, input.projectId, input.runId);
+      return;
+    }
     const message = error instanceof Error ? error.message : "Validation failed";
     await input.runs.update(input.runId, {
       status: "FAILED",

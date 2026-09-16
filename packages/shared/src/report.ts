@@ -55,6 +55,8 @@ export interface ReportObjectInput {
   deferred: boolean;
   attemptCount: number;
   reconcileAction: ReconcileAction | null;
+  targetSql?: string | null;
+  tableName?: string | null;
 }
 
 export interface ReportGraphInput {
@@ -242,6 +244,9 @@ export function gateStatusForReport(input: {
   if (input.runStatus === "QUEUED" || input.runStatus === "RUNNING") {
     return "IN_PROGRESS";
   }
+  if (input.runStatus === "CANCELLED") {
+    return "BLOCKED";
+  }
   if (input.blockingCount > 0) {
     return "BLOCKED";
   }
@@ -258,7 +263,71 @@ function blockingDetail(object: ReportObjectInput): string {
   if (object.status === "REDESIGN_REQUIRED") {
     return "Oracle behavior does not map safely; redesign is required";
   }
+  if (object.status === "REVIEW_REQUIRED") {
+    const detail = object.testError ?? object.compileError;
+    if (detail) {
+      return detail;
+    }
+    return "Needs review (HIGH-risk SQL or compile/test did not fully clear). Open the object for SQL/warnings, fix deps, re-run Views.";
+  }
   return object.testError ?? object.compileError ?? object.status;
+}
+
+/** Parse PostgreSQL `relation "…" does not exist` into OWNER.NAME. */
+export function missingRelationFromError(
+  message: string | null | undefined,
+  defaultOwner?: string | null,
+): {
+  owner: string;
+  name: string;
+} | null {
+  if (!message) {
+    return null;
+  }
+  const qualified = /relation\s+"([^".]+)\.([^"]+)"\s+does\s+not\s+exist/i.exec(message);
+  if (qualified?.[1] && qualified[2]) {
+    return { owner: qualified[1].toUpperCase(), name: qualified[2].toUpperCase() };
+  }
+  const bare = /relation\s+"([^".]+)"\s+does\s+not\s+exist/i.exec(message);
+  if (bare?.[1] && defaultOwner && defaultOwner.trim().length > 0) {
+    return { owner: defaultOwner.toUpperCase(), name: bare[1].toUpperCase() };
+  }
+  return null;
+}
+
+/** Detect OWNER.NAME of a table that must be added to scope for this blocker. */
+export function missingScopeTable(object: ReportObjectInput): {
+  owner: string;
+  name: string;
+} | null {
+  const detail = `${object.compileError ?? ""}\n${object.testError ?? ""}`;
+  const fromError = missingRelationFromError(detail, object.owner);
+  if (fromError) {
+    return fromError;
+  }
+  const alter =
+    /ALTER\s+TABLE\s+(?:ONLY\s+)?(?:"?([A-Za-z_][\w$]*)"?\s*\.\s*)?"?([A-Za-z_][\w$]*)"?/i.exec(
+      object.targetSql ?? "",
+    );
+  if (
+    String(object.objectType).toUpperCase() === "CONSTRAINT" &&
+    /not in SCHEMA scope/i.test(detail) &&
+    alter?.[1] &&
+    alter[2]
+  ) {
+    return { owner: alter[1].toUpperCase(), name: alter[2].toUpperCase() };
+  }
+  if (
+    String(object.objectType).toUpperCase() === "CONSTRAINT" &&
+    object.tableName &&
+    /does not exist|not in SCHEMA scope/i.test(detail)
+  ) {
+    return {
+      owner: object.owner.toUpperCase(),
+      name: object.tableName.replace(/^"|"$/g, "").toUpperCase(),
+    };
+  }
+  return null;
 }
 
 export function buildMigrationReport(input: BuildMigrationReportInput): MigrationReportDto {
@@ -332,6 +401,7 @@ export function buildMigrationReport(input: BuildMigrationReportInput): Migratio
       }
     }
     if (isReportBlockingStatus(object.status)) {
+      const missing = missingScopeTable(object);
       const item = {
         id: object.id,
         owner: object.owner,
@@ -339,6 +409,7 @@ export function buildMigrationReport(input: BuildMigrationReportInput): Migratio
         objectType: object.objectType,
         status: object.status,
         detail: blockingDetail(object),
+        missingTable: missing ? `${missing.owner}.${missing.name}` : null,
       };
       blocking.push(item);
       if (object.status === "REVIEW_REQUIRED") {

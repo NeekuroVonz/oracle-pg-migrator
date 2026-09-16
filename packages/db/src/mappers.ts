@@ -323,6 +323,7 @@ export function toDataCopyRunDto(
     failedCount: row.failedCount,
     matchedCount: row.matchedCount,
     errorMessage: row.errorMessage,
+    cancelRequested: row.cancelRequested ?? false,
     startedAt: row.startedAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),

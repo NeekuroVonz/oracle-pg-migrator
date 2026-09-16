@@ -71,10 +71,10 @@ export function ProjectNav() {
               key={href}
               href={href}
               className={cn(
-                "rounded-md px-3 py-1.5 text-sm",
+                "rounded-md border px-3 py-1.5 text-sm font-medium",
                 active
-                  ? "bg-surface-raised text-foreground"
-                  : "text-muted hover:bg-surface-raised hover:text-foreground",
+                  ? "border-accent bg-accent text-accent-fg"
+                  : "border-border bg-surface-raised text-foreground hover:border-accent hover:text-accent",
               )}
             >
               {tab.label}

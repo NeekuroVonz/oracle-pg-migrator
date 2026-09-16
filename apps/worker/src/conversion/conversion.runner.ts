@@ -11,19 +11,22 @@ import {
   ObjectDependenciesRepository,
 } from "@migrator/db";
 import { buildObjectDag } from "@migrator/dependency-graph";
-import { convertOracleDdl, convertWithOra2pgCli, detectRiskFlags } from "@migrator/ora2pg";
+import { applyCatalogColumnPatches, convertOracleDdl, convertWithOra2pgCli, detectRiskFlags, ensureTargetSchemaSql, mergeConstraintAlters } from "@migrator/ora2pg";
 import { type ReconcileObjectResult, reconcileObject } from "@migrator/postgres";
 import { createQueue, QUEUE_NAMES } from "@migrator/queue";
 import {
   defaultScopeInput,
   evaluateScopeCatalog,
+  isConversionStopped,
   isDeterministicSchemaType,
-  isPhase4ObjectType,
+  isPlsqlObjectType,
   MAPPING_RULES_VERSION,
   type DiscoveredObjectMetadata,
   type MigrationStrategy,
   type ObjectStatus,
+  parseRunTracks,
   type ReconcileAction,
+  typesForTracks,
   type ValidationJobData,
 } from "@migrator/shared";
 import type { Client } from "pg";
@@ -35,8 +38,15 @@ export { conversionObjectOrder } from "@migrator/dependency-graph";
 export function shouldConvertWithAi(
   action: ReconcileAction | null | undefined,
   useAi: boolean,
+  objectType?: string,
 ): boolean {
-  return useAi && action !== "SKIP_UNCHANGED";
+  if (!useAi || action === "SKIP_UNCHANGED") {
+    return false;
+  }
+  if (objectType && !isPlsqlObjectType(objectType)) {
+    return false;
+  }
+  return true;
 }
 
 function persistFromReconcile(
@@ -77,19 +87,38 @@ export async function runConversion(input: {
   connections: ConnectionsRepository;
   ai: AiRuntime;
 }): Promise<void> {
+  const existing = await input.runs.getById(input.runId);
+  if (isConversionStopped(existing)) {
+    await input.runs.update(input.runId, {
+      status: "CANCELLED",
+      errorMessage: "Stopped by user",
+      finishedAt: new Date(),
+    });
+    return;
+  }
   const startedAt = new Date();
-  await input.runs.update(input.runId, { status: "RUNNING", startedAt, errorMessage: null });
+  await input.runs.update(input.runId, { status: "RUNNING", startedAt });
   let target: Client | undefined;
   try {
+    const run = await input.runs.getById(input.runId);
+    if (isConversionStopped(run)) {
+      await input.runs.update(input.runId, {
+        status: "CANCELLED",
+        errorMessage: "Stopped by user",
+        finishedAt: new Date(),
+      });
+      return;
+    }
     target = await connectProjectTarget({
       projectId: input.projectId,
       connections: input.connections,
       cipher: input.cipher,
       statementTimeoutMs: input.env.VALIDATOR_STATEMENT_TIMEOUT_MS,
     });
-    const run = await input.runs.getById(input.runId);
     const strategy = (run?.strategy ?? "FAST") as MigrationStrategy;
-    const useAiConvert = strategy === "MAXIMUM_ACCURACY" && Boolean(input.ai.convert);
+    const tracks = parseRunTracks(run?.stats);
+    const selectedTypes = typesForTracks(tracks);
+    const useAiConvert = tracks.includes("PLSQL") && Boolean(input.ai.convert);
     const catalog = await input.objects.listFingerprints(input.projectId);
     const saved = await input.scopes.getByProjectId(input.projectId);
     const rules = saved
@@ -107,7 +136,7 @@ export async function runConversion(input: {
     const included = evaluateScopeCatalog(catalog, rules).filter((row) => row.included);
     const snapshot = included.map((row) => ({
       objectId: row.id,
-      deferred: useAiConvert ? false : !isPhase4ObjectType(row.objectType),
+      deferred: !selectedTypes.has(row.objectType),
     }));
     await input.runObjects.replace(input.runId, snapshot);
 
@@ -120,7 +149,15 @@ export async function runConversion(input: {
         objectType: row.objectType,
       })),
       selectedIds: included.map((row) => row.id),
-      unavailableIds: snapshot.filter((item) => item.deferred).map((item) => item.objectId),
+      unavailableIds: included
+        .filter((row) => {
+          if (selectedTypes.has(row.objectType)) {
+            return false;
+          }
+          const live = catalog.find((item) => item.id === row.id);
+          return !live?.targetSql || live.status === "FAILED";
+        })
+        .map((row) => row.id),
       edges: edges.map((edge) => ({
         fromId: edge.fromObjectId,
         toId: edge.toObjectId,
@@ -137,13 +174,35 @@ export async function runConversion(input: {
     let aiConvertCount = 0;
 
     for (const objectId of dag.order) {
+      const latest = await input.runs.getById(input.runId);
+      if (isConversionStopped(latest)) {
+        await input.runs.update(input.runId, {
+          status: "CANCELLED",
+          errorMessage: "Stopped by user",
+          convertedCount,
+          failedCount,
+          reviewRequiredCount,
+          deferredCount,
+          waitingDependencyCount,
+          stats: {
+            ...(latest?.stats ?? {}),
+            tracks,
+            mappingRulesVersion: MAPPING_RULES_VERSION,
+            strategy,
+            aiConvertCount,
+            cancelRequested: true,
+          },
+          finishedAt: new Date(),
+        });
+        return;
+      }
       const object = catalog.find((row) => row.id === objectId);
       if (!object) {
         continue;
       }
       const dagNode = dagNodeById.get(object.id);
-      const phase4 = isPhase4ObjectType(object.objectType);
-      if (!phase4 && !useAiConvert) {
+      const inTrack = selectedTypes.has(object.objectType);
+      if (!inTrack) {
         deferredCount += 1;
         continue;
       }
@@ -164,19 +223,53 @@ export async function runConversion(input: {
         name: object.name,
         sourceText: object.sourceText,
         columns: metadata.columns,
+        tableName: metadata.tableName,
       });
-      if (input.env.ORA2PG_BIN && object.sourceText && phase4) {
+      if (
+        input.env.ORA2PG_BIN &&
+        object.sourceText &&
+        object.objectType !== "CONSTRAINT" &&
+        object.objectType !== "INDEX"
+      ) {
         try {
           const sql = await convertWithOra2pgCli({
             bin: input.env.ORA2PG_BIN,
             sourceText: object.sourceText,
             objectType: object.objectType,
           });
-          result = {
-            ...result,
-            sql,
-            converterType: "ORA2PG",
-          };
+          let nextSql = ensureTargetSchemaSql(sql, object.owner, object.name, object.objectType);
+          if (object.objectType === "TABLE") {
+            const patched = applyCatalogColumnPatches(
+              nextSql,
+              object.owner,
+              object.name,
+              metadata.columns ?? [],
+            );
+            nextSql = mergeConstraintAlters(patched.sql, result.sql ?? "");
+            const catalogWarnings: string[] = [];
+            if (patched.rewrittenTypes.length > 0) {
+              catalogWarnings.push(
+                `Aligned column types with Oracle catalog (${patched.rewrittenTypes.join("; ")})`,
+              );
+            }
+            if (patched.added.length > 0) {
+              catalogWarnings.push(
+                `Oracle catalog has columns missing from extracted DDL; added ${patched.added.join(", ")}`,
+              );
+            }
+            result = {
+              ...result,
+              sql: nextSql,
+              converterType: "ORA2PG",
+              warnings: [...result.warnings, ...catalogWarnings],
+            };
+          } else {
+            result = {
+              ...result,
+              sql: nextSql,
+              converterType: "ORA2PG",
+            };
+          }
         } catch {
           result = {
             ...result,
@@ -215,7 +308,7 @@ export async function runConversion(input: {
       }
 
       if (
-        shouldConvertWithAi(recon?.reconcileAction, useAiConvert) &&
+        shouldConvertWithAi(recon?.reconcileAction, useAiConvert, object.objectType) &&
         input.ai.convert &&
         object.sourceText
       ) {
@@ -304,10 +397,11 @@ export async function runConversion(input: {
         failedCount += 1;
         status = "FAILED";
       } else if (
-        recon?.targetState === "TARGET_DRIFTED" ||
-        recon?.targetState === "TARGET_CONFLICT" ||
-        (!isDeterministicSchemaType(object.objectType) &&
-          (result.status === "REVIEW_REQUIRED" || recon?.reconcileAction === "REVIEW_REQUIRED"))
+        !isDeterministicSchemaType(object.objectType) &&
+        (recon?.targetState === "TARGET_DRIFTED" ||
+          recon?.targetState === "TARGET_CONFLICT" ||
+          result.status === "REVIEW_REQUIRED" ||
+          recon?.reconcileAction === "REVIEW_REQUIRED")
       ) {
         reviewRequiredCount += 1;
         status = "REVIEW_REQUIRED";
@@ -344,6 +438,8 @@ export async function runConversion(input: {
       deferredCount,
       waitingDependencyCount,
       stats: {
+        ...(run?.stats ?? {}),
+        tracks,
         mappingRulesVersion: MAPPING_RULES_VERSION,
         strategy,
         aiConvertCount,
@@ -366,8 +462,32 @@ export async function runConversion(input: {
         deferredCount,
         waitingDependencyCount,
         aiConvertCount,
+        tracks,
       },
     });
+
+    const afterConvert = await input.runs.getById(input.runId);
+    if (isConversionStopped(afterConvert)) {
+      await input.runs.update(input.runId, {
+        status: "CANCELLED",
+        errorMessage: "Stopped by user",
+        convertedCount,
+        failedCount,
+        reviewRequiredCount,
+        deferredCount,
+        waitingDependencyCount,
+        stats: {
+          ...(afterConvert?.stats ?? {}),
+          tracks,
+          mappingRulesVersion: MAPPING_RULES_VERSION,
+          strategy,
+          aiConvertCount,
+          cancelRequested: true,
+        },
+        finishedAt: new Date(),
+      });
+      return;
+    }
 
     const queue = createQueue<ValidationJobData>(QUEUE_NAMES.validation, input.env.REDIS_URL);
     try {
@@ -380,6 +500,15 @@ export async function runConversion(input: {
       await queue.close();
     }
   } catch (error) {
+    const latest = await input.runs.getById(input.runId);
+    if (isConversionStopped(latest)) {
+      await input.runs.update(input.runId, {
+        status: "CANCELLED",
+        errorMessage: "Stopped by user",
+        finishedAt: new Date(),
+      });
+      return;
+    }
     const message = error instanceof Error ? error.message : "Conversion failed";
     await input.runs.update(input.runId, {
       status: "FAILED",

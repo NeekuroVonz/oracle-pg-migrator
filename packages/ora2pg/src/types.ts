@@ -142,28 +142,23 @@ function mapNumberType(parsed: ParsedOracleType): string {
   }
   const scale = parsed.scale;
   const precision = parsed.precision;
+  // Bare NUMBER/NUMERIC/DECIMAL (no precision) is arbitrary scale in Oracle — never bigint.
   if (precision == null && scale == null) {
-    return "bigint";
-  }
-  if (precision != null && (scale == null || scale === 0)) {
-    if (precision <= 4) {
-      return "smallint";
-    }
-    if (precision <= 9) {
-      return "integer";
-    }
-    if (precision <= 18) {
-      return "bigint";
-    }
-    return `numeric(${precision})`;
+    return "numeric";
   }
   if (precision != null && scale != null && scale > 0) {
     return `numeric(${precision},${scale})`;
+  }
+  if (precision != null && (scale == null || scale === 0)) {
+    // Prefer numeric over smallint/integer/bigint — Oracle NUMBER often holds fractions
+    // and TARGET may already be widened by data-copy.
+    return `numeric(${precision})`;
   }
   return "numeric";
 }
 
 export const ORACLE_TYPE_PATTERN = new RegExp(
-  `\\b(?:${TYPE_NAMES})(?![A-Za-z0-9_])(?:\\s*\\(\\s*(?:\\*|\\d+)(?:\\s+(?:BYTE|CHAR))?(?:\\s*,\\s*(?:\\*|\\d+))?\\s*\\))?(?:\\s+WITH(?:\\s+LOCAL)?\\s+TIME\\s+ZONE)?(?:\\s+(?:BYTE|CHAR))?`,
+  // Bare DEC is a common column name (December) — only map DEC(...).
+  `\\b(?:${TYPE_NAMES.replace(/\|DEC\|/i, "|").replace(/\|DEC$/i, "")})(?![A-Za-z0-9_])(?:\\s*\\(\\s*(?:\\*|\\d+)(?:\\s+(?:BYTE|CHAR))?(?:\\s*,\\s*(?:\\*|\\d+))?\\s*\\))?(?:\\s+WITH(?:\\s+LOCAL)?\\s+TIME\\s+ZONE)?(?:\\s+(?:BYTE|CHAR))?|\\bDEC\\s*\\(\\s*(?:\\*|\\d+)(?:\\s*,\\s*(?:\\*|\\d+))?\\s*\\)`,
   "gi",
 );

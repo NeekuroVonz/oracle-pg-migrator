@@ -81,7 +81,7 @@ export async function reconcileObject(input: ReconcileObjectInput): Promise<Reco
     diff.destructive ||
     (populated && populatedBlocksAutoUpdate(diff)) ||
     (desired?.kind === "materialized_view" && diff.changes.length > 0);
-  const classified = classifyThreeWay({
+  let classified = classifyThreeWay({
     desiredHash,
     targetHash,
     previousDesiredHash: input.previousDesiredHash,
@@ -90,6 +90,19 @@ export async function reconcileObject(input: ReconcileObjectInput): Promise<Reco
     destructive,
     populated,
   });
+  // Cosmetic hash drift (e.g. system PK name) with an empty structural diff is a match.
+  if (
+    classified.reconcileAction === "UPDATE_REQUIRED" &&
+    diff.changes.length === 0 &&
+    desiredHash &&
+    targetHash
+  ) {
+    classified = {
+      targetState: "TARGET_MATCHED",
+      reconcileAction: "SKIP_UNCHANGED",
+      reason: "Target already matches the desired PostgreSQL definition",
+    };
+  }
   const desiredForPlan =
     desired && actual ? remapShapeLocation(desired, actual.schema, actual.name) : desired;
   const reconcileSql =
@@ -127,14 +140,15 @@ export function sandboxSqlForAction(input: {
   reconcileSql: string | null;
   cloneSql: string | null;
 }): string | null {
+  // Scratch validator is empty. TARGET match/drift is a deploy concern — still CREATE.
   if (input.action === "SKIP_UNCHANGED" || input.action === "REVIEW_REQUIRED") {
-    return null;
+    return input.desiredSql;
   }
   if (input.action === "CREATE_REQUIRED") {
     return input.desiredSql;
   }
   if (!input.cloneSql || !input.reconcileSql) {
-    return input.reconcileSql;
+    return input.reconcileSql ?? input.desiredSql;
   }
   return `${input.cloneSql}\n${input.reconcileSql}`;
 }

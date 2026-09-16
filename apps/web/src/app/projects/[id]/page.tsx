@@ -9,6 +9,7 @@ import { Card, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { MigrationGuide } from "@/components/migration-guide";
 import { api } from "@/lib/api";
 
 export default function ProjectDetailPage() {
@@ -116,6 +117,7 @@ export default function ProjectDetailPage() {
         </div>
       )}
       {error && project && !editing ? <p className="mt-3 text-sm text-danger">{error}</p> : null}
+      <MigrationGuide projectId={project.id} className="mt-6" />
       <div className="mt-6 grid gap-4 md:grid-cols-2">
         <Card>
           <CardTitle>Connections</CardTitle>

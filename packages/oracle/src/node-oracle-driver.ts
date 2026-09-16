@@ -2,7 +2,9 @@
 import oracledb, { type Connection } from "oracledb";
 import type { OracleConnectConfig, OracleDriver, OracleQueryResult, OracleSession } from "./types";
 
+// Avoid cyclic Lob objects that break JSON.stringify and node-postgres binds.
 oracledb.fetchAsString = [oracledb.CLOB];
+oracledb.fetchAsBuffer = [oracledb.BLOB];
 
 class NodeOracleSession implements OracleSession {
   constructor(private readonly connection: Connection) {}

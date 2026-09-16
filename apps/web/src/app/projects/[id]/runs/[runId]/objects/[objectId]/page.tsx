@@ -12,6 +12,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardTitle } from "@/components/ui/card";
+import { RunNav } from "@/components/run-nav";
 import { api } from "@/lib/api";
 
 type DiffChange = {
@@ -60,12 +61,8 @@ export default function RunObjectPage() {
     : null;
   return (
     <div className="mx-auto max-w-6xl px-8 py-8">
-      <p className="text-sm text-muted">
-        <Link href={`/projects/${params.id}/runs/${params.runId}`} className="hover:underline">
-          Run
-        </Link>
-      </p>
-      <div className="mt-2 flex flex-wrap items-center gap-3">
+      <RunNav />
+      <div className="mt-4 flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-semibold">
           {object.owner}.{object.name}
         </h1>

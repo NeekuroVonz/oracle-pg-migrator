@@ -223,19 +223,32 @@ export function canonicalizeShape(shape: PgObjectShape): PgObjectShape {
           }))
           .sort((a, b) => a.name.localeCompare(b.name)),
         constraints: [...shape.constraints]
-          .map((constraint) => ({
-            name: canonicalizeIdent(constraint.name),
-            kind: constraint.kind,
-            columns: [...constraint.columns].map(canonicalizeIdent).sort(),
-            definition: canonicalizeDefinition(constraint.definition),
-            referencedSchema: constraint.referencedSchema
-              ? canonicalizeIdent(constraint.referencedSchema)
-              : null,
-            referencedTable: constraint.referencedTable
-              ? canonicalizeIdent(constraint.referencedTable)
-              : null,
-            referencedColumns: [...constraint.referencedColumns].map(canonicalizeIdent).sort(),
-          }))
+          .map((constraint) => {
+            const columns = [...constraint.columns].map(canonicalizeIdent).sort();
+            const stableName =
+              constraint.kind === "PRIMARY KEY" || constraint.kind === "UNIQUE"
+                ? `${constraint.kind.toLowerCase().replace(/\s+/g, "_")}:${columns.join(",")}`
+                : canonicalizeIdent(constraint.name);
+            const stableDefinition =
+              constraint.kind === "PRIMARY KEY"
+                ? `primary key (${columns.join(", ")})`
+                : constraint.kind === "UNIQUE"
+                  ? `unique (${columns.join(", ")})`
+                  : canonicalizeDefinition(constraint.definition);
+            return {
+              name: stableName,
+              kind: constraint.kind,
+              columns,
+              definition: stableDefinition,
+              referencedSchema: constraint.referencedSchema
+                ? canonicalizeIdent(constraint.referencedSchema)
+                : null,
+              referencedTable: constraint.referencedTable
+                ? canonicalizeIdent(constraint.referencedTable)
+                : null,
+              referencedColumns: [...constraint.referencedColumns].map(canonicalizeIdent).sort(),
+            };
+          })
           .sort((a, b) => a.name.localeCompare(b.name)),
       };
     case "index":
@@ -358,12 +371,28 @@ const WIDEN: Record<string, string[]> = {
   char: ["varchar", "text"],
 };
 
+function isWiderNumericKept(from: string, to: string): boolean {
+  const source = parseType(canonicalizeType(from));
+  const dest = parseType(canonicalizeType(to));
+  // TARGET already widened (e.g. data-copy); do not shrink back to smallint/integer.
+  if (source.name === "numeric" && ["smallint", "integer", "bigint"].includes(dest.name)) {
+    return true;
+  }
+  if (source.name === "bigint" && ["smallint", "integer"].includes(dest.name)) {
+    return true;
+  }
+  if (source.name === "integer" && dest.name === "smallint") {
+    return true;
+  }
+  return false;
+}
+
 function typeChangeDestructive(from: string, to: string): boolean {
-  if (from === to) {
+  if (from === to || isWiderNumericKept(from, to)) {
     return false;
   }
-  const source = parseType(from);
-  const dest = parseType(to);
+  const source = parseType(canonicalizeType(from));
+  const dest = parseType(canonicalizeType(to));
   if (source.name === dest.name) {
     if (source.length != null && dest.length != null && dest.length < source.length) {
       return true;
@@ -381,6 +410,13 @@ function typeChangeDestructive(from: string, to: string): boolean {
     return false;
   }
   return true;
+}
+
+function constraintMatchKey(constraint: PgConstraintShape): string {
+  if (constraint.kind === "PRIMARY KEY" || constraint.kind === "UNIQUE") {
+    return `${constraint.kind}:${[...constraint.columns].map(canonicalizeIdent).sort().join(",")}`;
+  }
+  return `name:${canonicalizeIdent(constraint.name)}`;
 }
 
 function change(
@@ -411,14 +447,16 @@ function diffTables(desired: PgTableShape, actual: PgTableShape): ReconcileChang
       );
       continue;
     }
-    if (existing.type !== column.type) {
+    const existingType = canonicalizeType(existing.type);
+    const desiredType = canonicalizeType(column.type);
+    if (existingType !== desiredType && !isWiderNumericKept(existingType, desiredType)) {
       changes.push(
         change(
           "alter_column_type",
           `column.${column.name}.type`,
-          typeChangeDestructive(existing.type, column.type),
-          existing.type,
-          column.type,
+          typeChangeDestructive(existingType, desiredType),
+          existingType,
+          desiredType,
         ),
       );
     }
@@ -433,27 +471,30 @@ function diffTables(desired: PgTableShape, actual: PgTableShape): ReconcileChang
         ),
       );
     }
-    if (existing.default !== column.default) {
+    const existingDefault = canonicalizeDefault(existing.default);
+    const desiredDefault = canonicalizeDefault(column.default);
+    if (existingDefault !== desiredDefault) {
       changes.push(
         change(
           "alter_column_default",
           `column.${column.name}.default`,
           false,
-          existing.default,
-          column.default,
+          existingDefault,
+          desiredDefault,
         ),
       );
     }
   }
   for (const column of actual.columns) {
     if (!desiredCols.has(column.name)) {
-      changes.push(change("drop_column", `column.${column.name}`, true, column, undefined));
+      // Keep extra TARGET columns (GTT leftovers / prior mapping bugs); never auto-DROP.
+      continue;
     }
   }
-  const desiredCons = new Map(desired.constraints.map((item) => [item.name, item]));
-  const actualCons = new Map(actual.constraints.map((item) => [item.name, item]));
-  for (const constraint of desired.constraints) {
-    const existing = actualCons.get(constraint.name);
+  const desiredCons = new Map(desired.constraints.map((item) => [constraintMatchKey(item), item]));
+  const actualCons = new Map(actual.constraints.map((item) => [constraintMatchKey(item), item]));
+  for (const [key, constraint] of desiredCons) {
+    const existing = actualCons.get(key);
     if (!existing) {
       const risky = constraint.kind !== "CHECK";
       changes.push(
@@ -461,17 +502,21 @@ function diffTables(desired: PgTableShape, actual: PgTableShape): ReconcileChang
       );
       continue;
     }
-    if (JSON.stringify(existing) !== JSON.stringify(constraint)) {
+    // Same PK/UNIQUE columns under a different system name is not a structural change.
+    if (
+      constraint.kind !== "PRIMARY KEY" &&
+      constraint.kind !== "UNIQUE" &&
+      JSON.stringify(existing) !== JSON.stringify(constraint)
+    ) {
       changes.push(
         change("alter_constraint", `constraint.${constraint.name}`, true, existing, constraint),
       );
     }
   }
-  for (const constraint of actual.constraints) {
-    if (!desiredCons.has(constraint.name)) {
-      changes.push(
-        change("drop_constraint", `constraint.${constraint.name}`, true, constraint, undefined),
-      );
+  for (const [key, constraint] of actualCons) {
+    if (!desiredCons.has(key)) {
+      // Table DDL often omits PKs that live as separate CONSTRAINT objects — never drop.
+      continue;
     }
   }
   return changes;
@@ -484,53 +529,55 @@ export function diffPgShapes(desired: PgObjectShape, actual: PgObjectShape | nul
       destructive: false,
     };
   }
-  if (desired.kind !== actual.kind) {
+  const left = canonicalizeShape(desired);
+  const right = canonicalizeShape(actual);
+  if (left.kind !== right.kind) {
     return {
-      changes: [change("drop_object", actual.name, true, actual.kind, desired.kind)],
+      changes: [change("drop_object", right.name, true, right.kind, left.kind)],
       destructive: true,
     };
   }
   let changes: ReconcileChange[] = [];
-  switch (desired.kind) {
+  switch (left.kind) {
     case "table":
-      changes = diffTables(desired, actual as PgTableShape);
+      changes = diffTables(left, right as PgTableShape);
       break;
     case "index": {
-      const other = actual as PgIndexShape;
+      const other = right as PgIndexShape;
       if (
-        desired.unique !== other.unique ||
-        desired.method !== other.method ||
-        desired.tableName !== other.tableName ||
-        JSON.stringify(desired.columns) !== JSON.stringify(other.columns)
+        left.unique !== other.unique ||
+        left.method !== other.method ||
+        left.tableName !== other.tableName ||
+        JSON.stringify(left.columns) !== JSON.stringify(other.columns)
       ) {
-        changes.push(change("alter_index", desired.name, false, other, desired));
+        changes.push(change("alter_index", left.name, false, other, left));
       }
       break;
     }
     case "sequence": {
-      const other = actual as PgSequenceShape;
+      const other = right as PgSequenceShape;
       if (
-        desired.increment !== other.increment ||
-        desired.minValue !== other.minValue ||
-        desired.maxValue !== other.maxValue ||
-        desired.cycle !== other.cycle ||
-        desired.cache !== other.cache
+        left.increment !== other.increment ||
+        left.minValue !== other.minValue ||
+        left.maxValue !== other.maxValue ||
+        left.cycle !== other.cycle ||
+        left.cache !== other.cache
       ) {
-        changes.push(change("alter_sequence", desired.name, false, other, desired));
+        changes.push(change("alter_sequence", left.name, false, other, left));
       }
       break;
     }
     case "view":
     case "materialized_view": {
-      const other = actual as PgViewShape;
-      if (desired.definition !== other.definition) {
+      const other = right as PgViewShape;
+      if (left.definition !== other.definition) {
         changes.push(
           change(
             "replace_definition",
-            desired.name,
-            desired.kind === "materialized_view",
+            left.name,
+            left.kind === "materialized_view",
             other.definition,
-            desired.definition,
+            left.definition,
           ),
         );
       }
@@ -538,24 +585,24 @@ export function diffPgShapes(desired: PgObjectShape, actual: PgObjectShape | nul
     }
     case "function":
     case "procedure": {
-      const other = actual as PgRoutineShape;
-      if (desired.definition !== other.definition || desired.identityArgs !== other.identityArgs) {
-        changes.push(change("replace_definition", desired.name, false, other, desired));
+      const other = right as PgRoutineShape;
+      if (left.definition !== other.definition || left.identityArgs !== other.identityArgs) {
+        changes.push(change("replace_definition", left.name, false, other, left));
       }
       break;
     }
     case "trigger": {
-      const other = actual as PgTriggerShape;
-      if (desired.definition !== other.definition || desired.tableName !== other.tableName) {
-        changes.push(change("replace_definition", desired.name, false, other, desired));
+      const other = right as PgTriggerShape;
+      if (left.definition !== other.definition || left.tableName !== other.tableName) {
+        changes.push(change("replace_definition", left.name, false, other, left));
       }
       break;
     }
     case "constraint": {
-      const other = actual as PgConstraintObjectShape;
-      if (JSON.stringify(desired.constraint) !== JSON.stringify(other.constraint)) {
+      const other = right as PgConstraintObjectShape;
+      if (JSON.stringify(left.constraint) !== JSON.stringify(other.constraint)) {
         changes.push(
-          change("alter_constraint", desired.name, true, other.constraint, desired.constraint),
+          change("alter_constraint", left.name, true, other.constraint, left.constraint),
         );
       }
       break;
@@ -591,14 +638,16 @@ export function classifyThreeWay(input: ThreeWayInput): ThreeWayResult {
   const targetChanged =
     Boolean(input.previousTargetHash) && input.previousTargetHash !== input.targetHash;
   if (input.previousDesiredHash && input.previousTargetHash) {
-    if (targetChanged && !desiredChanged) {
+    // Only refuse when the live drift is destructive. Safe widens (bigint→numeric) and
+    // our own prior ALTERs must not block UPDATE after a mapping-rules change.
+    if (targetChanged && !desiredChanged && input.destructive) {
       return {
         targetState: "TARGET_DRIFTED",
         reconcileAction: "REVIEW_REQUIRED",
         reason: "PostgreSQL target changed manually after the previous migration",
       };
     }
-    if (targetChanged && desiredChanged) {
+    if (targetChanged && desiredChanged && input.destructive) {
       return {
         targetState: "TARGET_CONFLICT",
         reconcileAction: "REVIEW_REQUIRED",

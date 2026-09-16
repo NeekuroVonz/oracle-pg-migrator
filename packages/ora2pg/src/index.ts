@@ -1,11 +1,19 @@
 export { convertWithOra2pgCli } from "./cli";
 export type { ConversionResult } from "./convert";
 export {
+  applyCatalogColumnPatches,
+  aliasViewSelectToColumnList,
   convertOracleDdl,
   detectRiskFlags,
+  ensureTargetSchemaSql,
   mapTypesInSql,
+  mergeConstraintAlters,
+  rewriteCatalogColumnTypes,
+  rewriteDecode,
   rewriteIdentifiers,
+  stripOracleOuterJoinMarkers,
   toPgIdent,
+  toPrimaryKeyUsingIndexSql,
 } from "./convert";
 export {
   mapOracleDataType,

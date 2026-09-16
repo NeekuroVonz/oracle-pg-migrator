@@ -86,7 +86,9 @@ function tableAlter(desired: PgTableShape, changes: ReconcileChange[]): string[]
       const name = change.path.replace(/^column\./, "").replace(/\.type$/, "");
       const column = columns.get(canonicalizeIdent(name));
       if (column) {
-        statements.push(`ALTER TABLE ${table} ALTER COLUMN ${q(column.name)} TYPE ${column.type}`);
+        statements.push(
+          `ALTER TABLE ${table} ALTER COLUMN ${q(column.name)} TYPE ${column.type} USING ${q(column.name)}::${column.type}`,
+        );
       }
     } else if (change.kind === "alter_column_null") {
       const name = change.path.replace(/^column\./, "").replace(/\.nullable$/, "");

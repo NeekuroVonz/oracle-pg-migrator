@@ -12,6 +12,7 @@ export {
 } from "./catalog";
 export { CATALOG_SQL } from "./catalog-sql";
 export { NodeOracleDriver } from "./node-oracle-driver";
+export { normalizeOracleCell, normalizeOracleRows } from "./normalize-rows";
 export { mapOracleDictionaryType, SYSTEM_ORACLE_SCHEMAS } from "./object-types";
 export { type DiscoveryProgressHooks, OracleReadOnlyClient } from "./read-only-client";
 export {

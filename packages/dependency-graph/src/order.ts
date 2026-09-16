@@ -1,8 +1,8 @@
 const TYPE_RANK: Record<string, number> = {
   SEQUENCE: 1,
   TABLE: 2,
-  CONSTRAINT: 3,
-  INDEX: 4,
+  CONSTRAINT: 4,
+  INDEX: 3,
   VIEW: 5,
   MATERIALIZED_VIEW: 6,
 };

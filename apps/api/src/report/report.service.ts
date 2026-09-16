@@ -16,12 +16,47 @@ import {
   countCompileOutcomes,
   dataCopyReadiness,
   formatValidatedSqlBundle,
+  missingScopeTable,
   type MigrationReportDto,
   type MigrationReportSqlDto,
   NotFoundError,
   type ReportObjectInput,
 } from "@migrator/shared";
 import { Injectable } from "@nestjs/common";
+
+function enrichBlockingMissingTables(report: MigrationReportDto): MigrationReportDto {
+  const enrich = (items: MigrationReportDto["blocking"]) =>
+    items.map((item) => {
+      if (item.missingTable) {
+        return item;
+      }
+      const inferred = missingScopeTable({
+        id: item.id,
+        owner: item.owner,
+        name: item.name,
+        objectType: item.objectType,
+        status: item.status,
+        riskLevel: null,
+        compileStatus: null,
+        testStatus: null,
+        compileError: item.detail,
+        testError: null,
+        deferred: false,
+        attemptCount: 0,
+        reconcileAction: null,
+      });
+      return {
+        ...item,
+        missingTable: inferred ? `${inferred.owner}.${inferred.name}` : null,
+      };
+    });
+  return {
+    ...report,
+    blocking: enrich(report.blocking),
+    reviewRequired: enrich(report.reviewRequired),
+    redesignRequired: enrich(report.redesignRequired),
+  };
+}
 
 @Injectable()
 export class ReportService {
@@ -40,13 +75,17 @@ export class ReportService {
   async get(projectId: string, runId: string): Promise<MigrationReportDto> {
     const run = await this.requireRun(projectId, runId);
     const snapshot = await this.reports.getByRunId(runId);
-    if (snapshot && (run.status === "SUCCEEDED" || run.status === "FAILED")) {
+    if (snapshot && (run.status === "SUCCEEDED" || run.status === "FAILED" || run.status === "CANCELLED")) {
       const copy = await this.copyRuns.getLatestForConversionRun(runId);
       if (!copy?.finishedAt || copy.finishedAt <= snapshot.updatedAt) {
-        return toMigrationReportDto(snapshot);
+        return enrichBlockingMissingTables(toMigrationReportDto(snapshot));
       }
     }
-    return this.build(projectId, runId, run.status === "SUCCEEDED" || run.status === "FAILED");
+    return this.build(
+      projectId,
+      runId,
+      run.status === "SUCCEEDED" || run.status === "FAILED" || run.status === "CANCELLED",
+    );
   }
 
   async getSql(projectId: string, runId: string): Promise<MigrationReportSqlDto> {
@@ -143,6 +182,11 @@ export class ReportService {
           deferred: row.deferred,
           attemptCount: row.attemptCount,
           reconcileAction: (row.reconcileAction as ReportObjectInput["reconcileAction"]) ?? null,
+          targetSql: row.targetSql,
+          tableName:
+            typeof (row.metadata as { tableName?: unknown } | null)?.tableName === "string"
+              ? String((row.metadata as { tableName: string }).tableName)
+              : null,
         }),
       ),
       graph: {

@@ -14,7 +14,8 @@ describe("conversionObjectOrder", () => {
   test("sequences and tables compile before views", () => {
     expect(conversionObjectOrder("SEQUENCE")).toBeLessThan(conversionObjectOrder("TABLE"));
     expect(conversionObjectOrder("TABLE")).toBeLessThan(conversionObjectOrder("INDEX"));
-    expect(conversionObjectOrder("INDEX")).toBeLessThan(conversionObjectOrder("VIEW"));
+    expect(conversionObjectOrder("INDEX")).toBeLessThan(conversionObjectOrder("CONSTRAINT"));
+    expect(conversionObjectOrder("CONSTRAINT")).toBeLessThan(conversionObjectOrder("VIEW"));
   });
 });
 

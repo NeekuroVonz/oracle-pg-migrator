@@ -11,6 +11,7 @@ export interface StructuralTestInput {
   objectType: OracleObjectType | string;
   targetSchema: string | null;
   targetName: string | null;
+  targetSql?: string | null;
   oracleColumns?: DiscoveredColumn[];
   statementTimeoutMs?: number;
 }
@@ -192,23 +193,39 @@ export async function runStructuralTests(
   const type = String(input.objectType).toUpperCase();
   try {
     if (type === "TABLE" || type === "CONSTRAINT") {
-      const exists = await relationExists(executor, schema, name, type === "TABLE" ? ["r"] : ["r"]);
       if (type === "CONSTRAINT") {
+        const fromSql =
+          /ADD\s+CONSTRAINT\s+(?:"([^"]+)"|([A-Za-z_][\w$]*))/i.exec(input.targetSql ?? "") ??
+          null;
+        const constraintName = catalogName(fromSql?.[1] ?? fromSql?.[2] ?? name);
+        const tableFromSql =
+          /ALTER\s+TABLE\s+(?:ONLY\s+)?(?:(?:"[^"]+"|[A-Za-z_][\w$]*)\s*\.\s*)?(?:"([^"]+)"|([A-Za-z_][\w$]*))/i.exec(
+            input.targetSql ?? "",
+          );
+        const tableName = catalogName(tableFromSql?.[1] ?? tableFromSql?.[2] ?? "");
         const constraint = await firstRow<{ constraint_name: string }>(
           executor,
-          `SELECT constraint_name
-           FROM information_schema.table_constraints
-           WHERE constraint_schema = $1 AND constraint_name = $2`,
-          [schema, name],
+          `SELECT c.conname AS constraint_name
+           FROM pg_constraint c
+           JOIN pg_class r ON r.oid = c.conrelid
+           JOIN pg_namespace n ON n.oid = r.relnamespace
+           WHERE n.nspname = $1
+             AND (
+               c.conname = $2
+               OR ($3 <> '' AND r.relname = $3 AND c.contype = 'p')
+             )
+           LIMIT 1`,
+          [schema, constraintName, tableName],
         );
         checks.push({
           name: "catalog.constraint",
           ok: Boolean(constraint),
           message: constraint
-            ? `Constraint ${name} exists`
-            : `Constraint ${schema}.${name} not found`,
+            ? `Constraint ${constraint.constraint_name} exists`
+            : `Constraint ${schema}.${constraintName} not found`,
         });
       } else {
+        const exists = await relationExists(executor, schema, name, ["r"]);
         checks.push({
           name: "catalog.table",
           ok: exists,

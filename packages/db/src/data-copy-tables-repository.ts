@@ -51,4 +51,23 @@ export class DataCopyTablesRepository {
     }
     return row;
   }
+
+  /** Re-queue FAILED (and leftover PENDING) tables; keep offsets for mid-table resume. */
+  async resetRetryable(copyRunId: string): Promise<DataCopyTableRow[]> {
+    const tables = await this.listByCopyRun(copyRunId);
+    const retryable = tables.filter(
+      (row) => row.status === "FAILED" || row.status === "PENDING",
+    );
+    const updated: DataCopyTableRow[] = [];
+    for (const table of retryable) {
+      updated.push(
+        await this.update(table.id, {
+          status: "PENDING",
+          errorMessage: null,
+          postgresRows: null,
+        }),
+      );
+    }
+    return updated;
+  }
 }
